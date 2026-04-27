@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { detectFromUrl } from "@/lib/facepp";
+import { detectFromUrl } from "@/lib/enrich";
 import { corsHeaders, preflight } from "@/lib/cors";
 
 const Schema = z.object({

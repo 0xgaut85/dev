@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { detectFromUrl } from "@/lib/facepp";
+import { detectFromUrl } from "@/lib/enrich";
 
 // Cookie-authenticated enrichment endpoint for the dashboard UI.
 // (The bearer-protected /api/enrich is for extension/automation use.)
@@ -20,7 +20,14 @@ export async function POST(req: NextRequest) {
   if (!session || session !== expected) {
     return NextResponse.json({ error: "unauthorized — please re-login" }, { status: 401 });
   }
-  if (!process.env.FACEPP_API_KEY || !process.env.FACEPP_API_SECRET) {
+  const provider = (process.env.ENRICH_PROVIDER ?? "openai").toLowerCase();
+  if ((provider === "openai" || provider === "openai-then-facepp") && !process.env.OPENAI_API_KEY) {
+    return NextResponse.json(
+      { error: "OPENAI_API_KEY not set on the server" },
+      { status: 500 }
+    );
+  }
+  if (provider === "facepp" && (!process.env.FACEPP_API_KEY || !process.env.FACEPP_API_SECRET)) {
     return NextResponse.json(
       { error: "FACEPP_API_KEY / FACEPP_API_SECRET not set on the server" },
       { status: 500 }
