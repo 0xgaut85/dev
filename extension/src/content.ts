@@ -1,11 +1,4 @@
-import {
-  scrapeSearchResults,
-  scrapePersonProfile,
-  scrollForMore,
-  getScrollDebug,
-  clickNextPage,
-  hasNextPageButton,
-} from "./scrape";
+import { scrapeSearchResults, scrapePersonProfile } from "./scrape";
 import { SELECTORS, isPersonProfilePage } from "./selectors";
 import type { ScrapedLead } from "./types";
 
@@ -13,10 +6,9 @@ type Msg =
   | { type: "PING" }
   | { type: "SCRAPE_PAGE" }
   | { type: "SCRAPE_PROFILE" }
-  | { type: "SCROLL_FOR_MORE" }
-  | { type: "SCROLL_DEBUG" }
-  | { type: "GO_NEXT_PAGE" }
-  | { type: "HAS_NEXT_PAGE" }
+  | { type: "GET_VIEWPORT" }
+  | { type: "CLICK_AT"; cssX: number; cssY: number }
+  | { type: "WAIT_FOR_PAGE_TURN"; firstHrefBefore: string | null; timeoutMs?: number }
   | { type: "WAIT_FOR_READY"; mode: "list" | "profile"; timeoutMs?: number };
 
 function sleep(ms: number) {
@@ -66,30 +58,69 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
     scrapePersonProfile().then((lead) => sendResponse({ ok: true, lead }));
     return true;
   }
-  if (msg.type === "SCROLL_FOR_MORE") {
+  if (msg.type === "GET_VIEWPORT") {
+    const firstHref =
+      document.querySelector<HTMLAnchorElement>(SELECTORS.personLinkInRow)?.href ?? null;
+    sendResponse({
+      ok: true,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      url: location.href,
+      firstHref,
+    });
+    return true;
+  }
+  if (msg.type === "CLICK_AT") {
     (async () => {
-      const before = document.querySelectorAll(SELECTORS.personLinkInRow).length;
-      const grew = await scrollForMore(12000);
-      const after = document.querySelectorAll(SELECTORS.personLinkInRow).length;
-      sendResponse({ ok: true, grew, before, after });
+      const { cssX, cssY } = msg;
+      const el = document.elementFromPoint(cssX, cssY) as HTMLElement | null;
+      if (!el) {
+        sendResponse({ ok: false, error: "no element at coords" });
+        return;
+      }
+      // Walk up to the nearest button/a — the icon inside is often what's
+      // returned by elementFromPoint, but the actual handler lives on the
+      // parent button.
+      const target = (el.closest("button, a, [role='button']") as HTMLElement) ?? el;
+      target.scrollIntoView({ block: "center", behavior: "instant" as ScrollBehavior });
+      await new Promise((r) => setTimeout(r, 80));
+      const rect = target.getBoundingClientRect();
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      } as const;
+      target.dispatchEvent(new PointerEvent("pointerdown", opts));
+      target.dispatchEvent(new MouseEvent("mousedown", opts));
+      target.dispatchEvent(new PointerEvent("pointerup", opts));
+      target.dispatchEvent(new MouseEvent("mouseup", opts));
+      target.dispatchEvent(new MouseEvent("click", opts));
+      (target as HTMLButtonElement).click?.();
+      sendResponse({
+        ok: true,
+        targetTag: target.tagName,
+        targetClass: target.className?.toString() ?? "",
+      });
     })();
     return true;
   }
-  if (msg.type === "SCROLL_DEBUG") {
-    sendResponse({ ok: true, debug: getScrollDebug() });
-    return true;
-  }
-  if (msg.type === "GO_NEXT_PAGE") {
+  if (msg.type === "WAIT_FOR_PAGE_TURN") {
     (async () => {
-      const before = document.querySelectorAll(SELECTORS.personLinkInRow).length;
-      const advanced = await clickNextPage(15000);
-      const after = document.querySelectorAll(SELECTORS.personLinkInRow).length;
-      sendResponse({ ok: true, advanced, before, after, url: location.href });
+      const deadline = Date.now() + (msg.timeoutMs ?? 15000);
+      while (Date.now() < deadline) {
+        const firstNow =
+          document.querySelector<HTMLAnchorElement>(SELECTORS.personLinkInRow)?.href ?? null;
+        if (firstNow && firstNow !== msg.firstHrefBefore) {
+          sendResponse({ ok: true, advanced: true, firstHref: firstNow });
+          return;
+        }
+        await sleep(400);
+      }
+      sendResponse({ ok: true, advanced: false });
     })();
-    return true;
-  }
-  if (msg.type === "HAS_NEXT_PAGE") {
-    sendResponse({ ok: true, has: hasNextPageButton() });
     return true;
   }
   if (msg.type === "WAIT_FOR_READY") {

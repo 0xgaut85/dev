@@ -12,7 +12,8 @@ export function middleware(req: NextRequest) {
     pathname === "/api/ingest" ||
     pathname.startsWith("/api/ingest/") ||
     pathname === "/api/enrich" ||
-    pathname.startsWith("/api/enrich/");
+    pathname.startsWith("/api/enrich/") ||
+    pathname === "/api/find-next-button";
   if (isBearerEndpoint) {
     const auth = req.headers.get("authorization") ?? "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";

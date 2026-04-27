@@ -197,6 +197,125 @@ async function enrichWithProfileVisits(
   return out;
 }
 
+// ---------- vision-driven pagination ----------
+
+type FindNextResp = {
+  ok: boolean;
+  found: boolean;
+  cssX?: number;
+  cssY?: number;
+  confidence?: number | null;
+  reason?: string | null;
+  error?: string;
+};
+
+async function findNextButtonViaApi(
+  imageDataUrl: string,
+  viewportWidth: number,
+  viewportHeight: number,
+  devicePixelRatio: number,
+  cfg: Settings
+): Promise<FindNextResp | null> {
+  const url = cfg.apiUrl.replace(/\/$/, "") + "/api/find-next-button";
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${cfg.apiToken}`,
+      },
+      body: JSON.stringify({
+        imageDataUrl,
+        viewportWidth,
+        viewportHeight,
+        devicePixelRatio,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as FindNextResp;
+    if (!res.ok) {
+      await setRunState({
+        lastError: `find-next-button HTTP ${res.status}: ${body.error ?? res.statusText}`,
+      });
+      return null;
+    }
+    return body;
+  } catch (err) {
+    await setRunState({
+      lastError: `find-next-button request failed: ${
+        err instanceof Error ? err.message : "?"
+      }`,
+    });
+    return null;
+  }
+}
+
+async function goNextPageWithVision(tabId: number, cfg: Settings): Promise<boolean> {
+  // 1. Get viewport metadata + a stable "first row" anchor for change detection.
+  const vp = await sendToTab<{
+    ok: boolean;
+    width: number;
+    height: number;
+    devicePixelRatio: number;
+    firstHref: string | null;
+  }>(tabId, { type: "GET_VIEWPORT" });
+  if (!vp?.ok) {
+    await setRunState({ lastError: "Could not read viewport from page." });
+    return false;
+  }
+
+  // 2. Capture the visible viewport (PNG, base64 data URL).
+  let dataUrl: string;
+  try {
+    dataUrl = await chrome.tabs.captureVisibleTab(undefined as unknown as number, {
+      format: "png",
+    });
+  } catch (err) {
+    await setRunState({
+      lastError: `Screenshot failed: ${err instanceof Error ? err.message : "?"}`,
+    });
+    return false;
+  }
+
+  // 3. Ask Grok where the Next arrow is.
+  const find = await findNextButtonViaApi(
+    dataUrl,
+    vp.width,
+    vp.height,
+    vp.devicePixelRatio,
+    cfg
+  );
+  if (!find) return false;
+  if (!find.found) {
+    await setRunState({ lastError: `Grok: ${find.reason ?? "no Next arrow visible"}` });
+    return false;
+  }
+  if (find.cssX == null || find.cssY == null) {
+    await setRunState({ lastError: "Grok response missing coordinates." });
+    return false;
+  }
+
+  // 4. Click at the returned CSS coordinates.
+  const click = await sendToTab<{ ok: boolean; targetTag?: string; error?: string }>(tabId, {
+    type: "CLICK_AT",
+    cssX: find.cssX,
+    cssY: find.cssY,
+  });
+  if (!click?.ok) {
+    await setRunState({
+      lastError: `Click failed: ${click?.error ?? "no element at coords"}`,
+    });
+    return false;
+  }
+
+  // 5. Wait for the first row to swap out (= page actually advanced).
+  const turn = await sendToTab<{ ok: boolean; advanced: boolean }>(tabId, {
+    type: "WAIT_FOR_PAGE_TURN",
+    firstHrefBefore: vp.firstHref,
+    timeoutMs: 15000,
+  });
+  return !!turn?.advanced;
+}
+
 // ---------- main runner ----------
 
 async function runAutoSearch(): Promise<void> {
@@ -251,7 +370,6 @@ async function runAutoSearch(): Promise<void> {
     // Each iteration: scrape what's currently in the DOM, process only the
     // *new* rows (dedupe by crunchbaseUrl), then scroll for more.
     const seenUrls = new Set<string>();
-    let consecutiveEmptyScrolls = 0;
 
     for (let batchNum = 1; batchNum <= cfg.maxPages; batchNum++) {
       if (stopRequested) break;
@@ -296,56 +414,29 @@ async function runAutoSearch(): Promise<void> {
 
       if (batchNum >= cfg.maxPages) break;
 
-      // Re-focus the seed tab so scroll/click events fire on a foregrounded tab.
+      // Re-focus the seed tab so click coordinates resolve on a foregrounded tab.
       try {
         await chrome.tabs.update(tab.id, { active: true });
+        await sleep(400);
       } catch {
         /* ignore */
       }
 
-      // Primary strategy: click the "Next page" arrow next to "1-50 of N results".
-      // Fallback: infinite-scroll the inner grid container.
-      const nextRes = await sendToTab<{
-        ok: boolean;
-        advanced: boolean;
-        before: number;
-        after: number;
-        url: string;
-      }>(tab.id, { type: "GO_NEXT_PAGE" });
-
-      if (nextRes?.ok && nextRes.advanced) {
-        consecutiveEmptyScrolls = 0;
-        // After click, wait for the new page to be ready before scraping again.
-        const ready = await waitForReady(tab.id, "list", 15000);
-        if (!ready.ok) {
-          await setRunState({
-            lastError: `Page ${batchNum + 1} not ready (${ready.reason}).`,
-          });
-          break;
-        }
-      } else {
-        // No Next button or click didn't change the page — try scroll fallback.
-        const scrollRes = await sendToTab<{
-          ok: boolean;
-          grew: boolean;
-          before: number;
-          after: number;
-        }>(tab.id, { type: "SCROLL_FOR_MORE" });
-
-        if (!scrollRes?.ok || !scrollRes.grew) {
-          consecutiveEmptyScrolls++;
-          if (consecutiveEmptyScrolls >= 2) {
-            await setRunState({
-              lastError: `End of results reached (no Next button, no new rows after scroll). Total: ${seenUrls.size}.`,
-            });
-            break;
-          }
-          await sleep(jitter(cfg.pageDelayMs * 2, 2000));
-        } else {
-          consecutiveEmptyScrolls = 0;
-        }
+      const advanced = await goNextPageWithVision(tab.id, cfg);
+      if (!advanced) {
+        await setRunState({
+          lastError: `End of results reached. Total scraped: ${seenUrls.size}.`,
+        });
+        break;
       }
 
+      const ready = await waitForReady(tab.id, "list", 15000);
+      if (!ready.ok) {
+        await setRunState({
+          lastError: `Page ${batchNum + 1} not ready (${ready.reason}).`,
+        });
+        break;
+      }
       await sleep(jitter(cfg.pageDelayMs, 2000));
     }
   } catch (err) {
