@@ -20,18 +20,26 @@ export async function POST(req: NextRequest) {
   if (!session || session !== expected) {
     return NextResponse.json({ error: "unauthorized — please re-login" }, { status: 401 });
   }
-  const provider = (process.env.ENRICH_PROVIDER ?? "grok").toLowerCase();
-  const needsGrok = provider.includes("grok");
-  const needsOpenAI = provider.includes("openai");
-  if (needsGrok && !process.env.XAI_API_KEY) {
+  const provider = (process.env.ENRICH_PROVIDER ?? "grok-then-openai").toLowerCase();
+  const haveGrok = !!process.env.XAI_API_KEY;
+  const haveOpenAI = !!process.env.OPENAI_API_KEY;
+
+  // Single-provider modes need their specific key. Chain modes need at least one.
+  if (provider === "grok" && !haveGrok) {
     return NextResponse.json(
-      { error: "XAI_API_KEY not set on the server" },
+      { error: "ENRICH_PROVIDER=grok but XAI_API_KEY is not set" },
       { status: 500 }
     );
   }
-  if (needsOpenAI && !process.env.OPENAI_API_KEY) {
+  if (provider === "openai" && !haveOpenAI) {
     return NextResponse.json(
-      { error: "OPENAI_API_KEY not set on the server" },
+      { error: "ENRICH_PROVIDER=openai but OPENAI_API_KEY is not set" },
+      { status: 500 }
+    );
+  }
+  if (provider.includes("then") && !haveGrok && !haveOpenAI) {
+    return NextResponse.json(
+      { error: "Neither XAI_API_KEY nor OPENAI_API_KEY is set on the server" },
       { status: 500 }
     );
   }

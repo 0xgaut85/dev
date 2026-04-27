@@ -73,18 +73,39 @@ function chain(detectors: Detector[]): Detector {
 }
 
 export async function detectFromUrl(imageUrl: string): Promise<EnrichmentResult> {
-  const provider = (process.env.ENRICH_PROVIDER ?? "grok").toLowerCase();
+  // Default to grok-then-openai so a missing/invalid Grok model silently falls
+  // back to OpenAI instead of failing the whole row. Set ENRICH_PROVIDER=openai
+  // (or grok) to force a single provider.
+  const provider = (process.env.ENRICH_PROVIDER ?? "grok-then-openai").toLowerCase();
+
+  // If a chosen provider's key isn't even set, skip it rather than fail loudly.
+  const haveGrok = !!process.env.XAI_API_KEY;
+  const haveOpenAI = !!process.env.OPENAI_API_KEY;
 
   switch (provider) {
     case "grok":
+      if (!haveGrok) throw new Error("ENRICH_PROVIDER=grok but XAI_API_KEY is not set");
       return detectFromUrlGrok(imageUrl);
     case "openai":
+      if (!haveOpenAI) throw new Error("ENRICH_PROVIDER=openai but OPENAI_API_KEY is not set");
       return detectFromUrlLlm(imageUrl);
-    case "grok-then-openai":
-      return chain([detectFromUrlGrok, detectFromUrlLlm])(imageUrl);
-    case "openai-then-grok":
-      return chain([detectFromUrlLlm, detectFromUrlGrok])(imageUrl);
+    case "grok-then-openai": {
+      const chainList: Detector[] = [];
+      if (haveGrok) chainList.push(detectFromUrlGrok);
+      if (haveOpenAI) chainList.push(detectFromUrlLlm);
+      if (chainList.length === 0)
+        throw new Error("Neither XAI_API_KEY nor OPENAI_API_KEY is set");
+      return chain(chainList)(imageUrl);
+    }
+    case "openai-then-grok": {
+      const chainList: Detector[] = [];
+      if (haveOpenAI) chainList.push(detectFromUrlLlm);
+      if (haveGrok) chainList.push(detectFromUrlGrok);
+      if (chainList.length === 0)
+        throw new Error("Neither OPENAI_API_KEY nor XAI_API_KEY is set");
+      return chain(chainList)(imageUrl);
+    }
     default:
-      return detectFromUrlGrok(imageUrl);
+      throw new Error(`Unknown ENRICH_PROVIDER: ${provider}`);
   }
 }
