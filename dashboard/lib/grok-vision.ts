@@ -5,7 +5,7 @@
 // Models with vision (as of 2026): grok-2-vision-1212, grok-4-vision (if
 // available on your account). Set XAI_VISION_MODEL to override.
 
-import type { FaceppResult } from "./facepp";
+import type { EnrichmentResult } from "./enrich";
 
 type LlmGuess = {
   age: number | null;
@@ -29,7 +29,7 @@ If the image isn't a clear single-person photo, return nulls. Confidence reflect
 
 const USER = `Estimate apparent age and ethnicity from this profile photo. Return only the JSON object specified.`;
 
-export async function detectFromUrlGrok(imageUrl: string): Promise<FaceppResult> {
+export async function detectFromUrlGrok(imageUrl: string): Promise<EnrichmentResult> {
   const apiKey = process.env.XAI_API_KEY;
   if (!apiKey) throw new Error("XAI_API_KEY not configured");
 

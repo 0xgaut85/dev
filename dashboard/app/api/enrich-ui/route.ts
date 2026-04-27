@@ -21,9 +21,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized — please re-login" }, { status: 401 });
   }
   const provider = (process.env.ENRICH_PROVIDER ?? "grok").toLowerCase();
-  const needsGrok = provider.startsWith("grok");
+  const needsGrok = provider.includes("grok");
   const needsOpenAI = provider.includes("openai");
-  const needsFacepp = provider.includes("facepp");
   if (needsGrok && !process.env.XAI_API_KEY) {
     return NextResponse.json(
       { error: "XAI_API_KEY not set on the server" },
@@ -33,12 +32,6 @@ export async function POST(req: NextRequest) {
   if (needsOpenAI && !process.env.OPENAI_API_KEY) {
     return NextResponse.json(
       { error: "OPENAI_API_KEY not set on the server" },
-      { status: 500 }
-    );
-  }
-  if (needsFacepp && (!process.env.FACEPP_API_KEY || !process.env.FACEPP_API_SECRET)) {
-    return NextResponse.json(
-      { error: "FACEPP_API_KEY / FACEPP_API_SECRET not set on the server" },
       { status: 500 }
     );
   }

@@ -1,37 +1,42 @@
 // Provider-agnostic enrichment dispatcher.
 //
 // ENRICH_PROVIDER env var (default "grok"):
-//   "grok"             → xAI Grok vision (most permissive)
-//   "openai"           → GPT-4o-mini vision
-//   "facepp"           → Face++ classical CV
-//   "grok-then-openai" → Grok first, OpenAI on failure
-//   "openai-then-facepp"
-//   "grok-then-facepp"
+//   "grok"             → xAI Grok vision (most permissive, default)
+//   "openai"           → OpenAI GPT-4o-mini vision
+//   "grok-then-openai" → Grok first, OpenAI on failure / null ethnicity
 
-import { detectFromUrl as detectFacepp, type FaceppResult } from "./facepp";
 import { detectFromUrlLlm } from "./llm-vision";
 import { detectFromUrlGrok } from "./grok-vision";
 
-type Detector = (url: string) => Promise<FaceppResult>;
+export type EnrichmentResult = {
+  ageLow: number | null;
+  ageHigh: number | null;
+  ethnicity: string | null;
+  confidence: number | null;
+  raw: unknown;
+};
+
+type Detector = (url: string) => Promise<EnrichmentResult>;
 
 function chain(detectors: Detector[]): Detector {
   return async (imageUrl: string) => {
     let lastErr: unknown = null;
+    let lastResult: EnrichmentResult | null = null;
     for (const d of detectors) {
       try {
         const r = await d(imageUrl);
         if (r.ethnicity) return r;
-        lastErr = new Error("ethnicity null");
-        // continue to next provider
+        lastResult = r;
       } catch (err) {
         lastErr = err;
       }
     }
+    if (lastResult) return lastResult;
     throw lastErr instanceof Error ? lastErr : new Error("all providers failed");
   };
 }
 
-export async function detectFromUrl(imageUrl: string): Promise<FaceppResult> {
+export async function detectFromUrl(imageUrl: string): Promise<EnrichmentResult> {
   const provider = (process.env.ENRICH_PROVIDER ?? "grok").toLowerCase();
 
   switch (provider) {
@@ -39,19 +44,11 @@ export async function detectFromUrl(imageUrl: string): Promise<FaceppResult> {
       return detectFromUrlGrok(imageUrl);
     case "openai":
       return detectFromUrlLlm(imageUrl);
-    case "facepp":
-      return detectFacepp(imageUrl);
     case "grok-then-openai":
       return chain([detectFromUrlGrok, detectFromUrlLlm])(imageUrl);
-    case "openai-then-facepp":
-      return chain([detectFromUrlLlm, detectFacepp])(imageUrl);
-    case "grok-then-facepp":
-      return chain([detectFromUrlGrok, detectFacepp])(imageUrl);
-    case "grok-then-openai-then-facepp":
-      return chain([detectFromUrlGrok, detectFromUrlLlm, detectFacepp])(imageUrl);
+    case "openai-then-grok":
+      return chain([detectFromUrlLlm, detectFromUrlGrok])(imageUrl);
     default:
       return detectFromUrlGrok(imageUrl);
   }
 }
-
-export type { FaceppResult };

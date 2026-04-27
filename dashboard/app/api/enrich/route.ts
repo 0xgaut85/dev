@@ -68,8 +68,7 @@ export async function POST(req: NextRequest) {
         error: err instanceof Error ? err.message : "unknown",
       });
     }
-    // QPS-friendly delay for Face++ free tier
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 300));
   }
 
   return NextResponse.json({ ok: true, results }, { headers: corsHeaders() });

@@ -1,8 +1,7 @@
 // LLM-vision based age + ethnicity inference (OpenAI GPT-4o-mini).
-// Drop-in replacement for Face++ — returns the same shape so the rest of the
-// pipeline (Enrichment table, dashboard filter) works unchanged.
+// Returns the shared EnrichmentResult shape used by the dispatcher.
 
-import type { FaceppResult } from "./facepp";
+import type { EnrichmentResult } from "./enrich";
 
 type LlmGuess = {
   age: number | null;
@@ -26,7 +25,7 @@ If the image isn't a clear single-person photo, or you genuinely cannot tell, re
 
 const USER = `Estimate apparent age and ethnicity from this profile photo. Return only the JSON object specified.`;
 
-export async function detectFromUrlLlm(imageUrl: string): Promise<FaceppResult> {
+export async function detectFromUrlLlm(imageUrl: string): Promise<EnrichmentResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY not configured");
 

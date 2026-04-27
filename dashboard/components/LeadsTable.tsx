@@ -210,13 +210,13 @@ export default function LeadsTable({
   return (
     <div className="space-y-4">
       <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs p-3 rounded-lg">
-        <strong>Enrichment status:</strong> {enrichedCount}/{leads.length} leads have Face++ data.{" "}
+        <strong>Enrichment status:</strong> {enrichedCount}/{leads.length} leads have AI vision data.{" "}
         {Object.entries(ethnicityCounts)
           .map(([k, v]) => `${k}: ${v}`)
           .join(" · ")}
         {enrichedCount < leads.length && (
           <span className="ml-1">
-            Filtering by ethnicity hides un-enriched leads — select all and click <em>Enrich with Face++</em> first.
+            Filtering by ethnicity hides un-enriched leads — select all and click <em>Enrich with AI</em> first.
           </span>
         )}
       </div>
@@ -311,7 +311,7 @@ export default function LeadsTable({
           disabled={selected.size === 0 || busy !== null}
           className="btn-primary"
         >
-          {busy === "enriching" ? "Enriching…" : "Enrich with Face++"}
+          {busy === "enriching" ? "Enriching…" : "Enrich with AI"}
         </button>
         <button
           onClick={markContacted}
