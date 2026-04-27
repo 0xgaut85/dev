@@ -153,25 +153,30 @@ async function navigateAndWait(
 
 // ---------- profile enrichment ----------
 
-async function visitProfile(
-  url: string,
-  profileDelayMs: number
-): Promise<ScrapedLead | null> {
+type VisitResult =
+  | { ok: true; lead: ScrapedLead | null }
+  | { ok: false; reason: "cloudflare" | "rate-limit" | "timeout" | "other" };
+
+async function visitProfile(url: string, profileDelayMs: number): Promise<VisitResult> {
   const tab = await chrome.tabs.create({ url, active: false });
-  if (!tab.id) return null;
+  if (!tab.id) return { ok: false, reason: "other" };
   try {
     const ready = await waitForReady(tab.id, "profile", 15000);
     if (!ready.ok) {
-      await setRunState({ lastError: `Profile not ready (${ready.reason}): ${url}` });
-      if (ready.reason === "cloudflare" || ready.reason === "rate-limit") {
-        stopRequested = true;
-      }
-      return null;
+      const reason =
+        ready.reason === "cloudflare"
+          ? "cloudflare"
+          : ready.reason === "rate-limit"
+            ? "rate-limit"
+            : ready.reason === "timeout"
+              ? "timeout"
+              : "other";
+      return { ok: false, reason };
     }
     const r = await sendToTab<{ ok: boolean; lead: ScrapedLead | null }>(tab.id, {
       type: "SCRAPE_PROFILE",
     });
-    return r?.lead ?? null;
+    return { ok: true, lead: r?.lead ?? null };
   } finally {
     try {
       await chrome.tabs.remove(tab.id);
@@ -182,17 +187,64 @@ async function visitProfile(
   }
 }
 
+/**
+ * Iterate through list-page leads and open each profile. On Cloudflare /
+ * rate-limit, back off (longer cooldowns each time) and retry, but keep
+ * going on the same lead. Only abort the run if we hit `MAX_CF_HITS`
+ * consecutive cloudflare blocks — at that point we're almost certainly
+ * being throttled and continuing makes things worse.
+ */
 async function enrichWithProfileVisits(
   listLeads: ScrapedLead[],
-  cfg: Settings
+  cfg: Settings,
 ): Promise<ScrapedLead[]> {
+  const MAX_CF_HITS = 5;
   const out: ScrapedLead[] = [];
+  let consecutiveCfHits = 0;
+
   for (const lead of listLeads) {
     if (stopRequested) break;
-    const state = await getRunState();
-    await setRunState({ profilesVisited: state.profilesVisited + 1 });
-    const profile = await visitProfile(lead.crunchbaseUrl, cfg.profileDelayMs);
-    out.push(profile ? mergeListAndProfile(lead, profile) : lead);
+
+    // Per-lead retry: on cloudflare, sleep with exponential backoff and try
+    // again up to 2 times before skipping the lead.
+    let attempts = 0;
+    let result: VisitResult | null = null;
+    while (attempts < 3 && !stopRequested) {
+      attempts++;
+      const state = await getRunState();
+      await setRunState({ profilesVisited: state.profilesVisited + 1 });
+      result = await visitProfile(lead.crunchbaseUrl, cfg.profileDelayMs);
+
+      if (result.ok) {
+        consecutiveCfHits = 0;
+        break;
+      }
+      if (result.reason === "cloudflare" || result.reason === "rate-limit") {
+        consecutiveCfHits++;
+        const cooldownMs = Math.min(60_000, 8_000 * attempts);
+        await setRunState({
+          lastError: `${result.reason} on ${lead.crunchbaseUrl} — cooling down ${Math.round(
+            cooldownMs / 1000,
+          )}s (attempt ${attempts}/3, total cf hits=${consecutiveCfHits})`,
+        });
+        if (consecutiveCfHits >= MAX_CF_HITS) {
+          await setRunState({
+            lastError: `Aborting: ${MAX_CF_HITS} consecutive Cloudflare blocks. Increase profile delay or wait a few minutes before retrying.`,
+          });
+          stopRequested = true;
+          break;
+        }
+        await sleep(cooldownMs);
+        continue;
+      }
+      // Non-cloudflare failure (timeout etc.) — don't retry, just skip.
+      await setRunState({
+        lastError: `Profile not ready (${result.reason}): ${lead.crunchbaseUrl} — skipping`,
+      });
+      break;
+    }
+
+    out.push(result?.ok ? mergeListAndProfile(lead, result.lead) : lead);
   }
   return out;
 }
