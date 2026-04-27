@@ -25,6 +25,13 @@ function extractCountry(location: string | null): string | null {
 
 function classifySocial(href: string): { type: "x" | "linkedin" | "website" | null; url: string } {
   const url = href;
+  // Reject Crunchbase's own footer social links — those exist on every page.
+  if (/twitter\.com\/crunchbase\b/i.test(href)) return { type: null, url };
+  if (/x\.com\/crunchbase\b/i.test(href)) return { type: null, url };
+  if (/linkedin\.com\/company\/crunchbase\b/i.test(href)) return { type: null, url };
+  if (/facebook\.com\/crunchbase\b/i.test(href)) return { type: null, url };
+  if (/instagram\.com\/crunchbase\b/i.test(href)) return { type: null, url };
+
   if (/(?:^|\/\/)(www\.)?(twitter|x)\.com\//i.test(href)) return { type: "x", url };
   if (/(?:^|\/\/)(www\.)?linkedin\.com\//i.test(href)) return { type: "linkedin", url };
   return { type: "website", url };
@@ -120,24 +127,16 @@ export function scrapeSearchResults(): ScrapedLead[] {
   return leads;
 }
 
-/**
- * Scrape a single person profile page — richer data including social links
- * and industry chips. Use this when the user is on /person/<slug>.
- */
-export function scrapePersonProfile(): ScrapedLead | null {
-  if (!isPersonProfilePage()) return null;
-
-  const name = textOf(document.querySelector(SELECTORS.profileName));
-  if (!name) return null;
-
-  const headline = textOf(document.querySelector(SELECTORS.profileHeadline));
-  const img = document.querySelector(SELECTORS.profileImage) as HTMLImageElement | null;
-  const photoUrl = abs(img?.getAttribute("src"));
-
+function collectSocials(): {
+  xUrl: string | null;
+  linkedInUrl: string | null;
+  websiteUrl: string | null;
+} {
   let xUrl: string | null = null;
   let linkedInUrl: string | null = null;
   let websiteUrl: string | null = null;
 
+  // Primary: aria-labelled / cb-link tagged links inside profile body.
   document
     .querySelectorAll<HTMLAnchorElement>(SELECTORS.profileSocials)
     .forEach((a) => {
@@ -148,6 +147,66 @@ export function scrapePersonProfile(): ScrapedLead | null {
       if (type === "linkedin" && !linkedInUrl) linkedInUrl = url;
       if (type === "website" && !websiteUrl) websiteUrl = url;
     });
+
+  // Fallback: scan all anchors inside the main profile area, but skip the
+  // page footer (which contains Crunchbase's own social links).
+  if (!xUrl || !linkedInUrl) {
+    const main =
+      document.querySelector("main") ||
+      document.querySelector("profile-page") ||
+      document.body;
+    const footer = document.querySelector("footer");
+    main
+      .querySelectorAll<HTMLAnchorElement>(
+        'a[href*="twitter.com"], a[href*="x.com"], a[href*="linkedin.com"]'
+      )
+      .forEach((a) => {
+        if (footer && footer.contains(a)) return;
+        const href = a.getAttribute("href");
+        if (!href) return;
+        const { type, url } = classifySocial(href);
+        if (type === "x" && !xUrl) xUrl = url;
+        if (type === "linkedin" && !linkedInUrl) linkedInUrl = url;
+      });
+  }
+  return { xUrl, linkedInUrl, websiteUrl };
+}
+
+async function waitForSocialsToRender(timeoutMs = 6000): Promise<void> {
+  // The Twitter / Social Media section can render after first paint.
+  // Scroll the page once to trigger lazy-loading, then poll briefly.
+  window.scrollTo({ top: document.body.scrollHeight / 2, behavior: "instant" as ScrollBehavior });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = document.querySelector(SELECTORS.profileSocials);
+    if (found) {
+      // Settle: give a tick for any remaining async render.
+      await new Promise((r) => setTimeout(r, 200));
+      window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+}
+
+/**
+ * Scrape a single person profile page — richer data including social links
+ * and industry chips. Use this when the user is on /person/<slug>.
+ */
+export async function scrapePersonProfile(): Promise<ScrapedLead | null> {
+  if (!isPersonProfilePage()) return null;
+
+  const name = textOf(document.querySelector(SELECTORS.profileName));
+  if (!name) return null;
+
+  await waitForSocialsToRender();
+
+  const headline = textOf(document.querySelector(SELECTORS.profileHeadline));
+  const img = document.querySelector(SELECTORS.profileImage) as HTMLImageElement | null;
+  const photoUrl = abs(img?.getAttribute("src"));
+
+  const { xUrl, linkedInUrl, websiteUrl } = collectSocials();
 
   const industries = Array.from(
     document.querySelectorAll<HTMLAnchorElement>(SELECTORS.industryChip)
@@ -209,25 +268,44 @@ function rowCount(): number {
  * Scroll the results container down to trigger lazy-load of more rows.
  * Returns true if new rows appeared, false if we hit the end.
  */
-export async function scrollForMore(timeoutMs = 12000): Promise<boolean> {
+export async function scrollForMore(timeoutMs = 20000): Promise<boolean> {
   const container = findScrollContainer();
   if (!container) return false;
 
   const before = rowCount();
-  // Multiple scroll nudges in case the virtualization needs a few ticks.
-  for (let i = 0; i < 3; i++) {
+
+  const nudge = () => {
     container.scrollTop = container.scrollHeight;
     container.dispatchEvent(new Event("scroll", { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 300));
+    container.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaY: 800,
+      })
+    );
+  };
+
+  // Short nudge sequence: alternate scrolling near-bottom and full-bottom to
+  // trick virtualized intersection observers into firing.
+  for (let i = 0; i < 5; i++) {
+    nudge();
+    await new Promise((r) => setTimeout(r, 250));
+    container.scrollTop = container.scrollHeight - container.clientHeight - 10;
+    await new Promise((r) => setTimeout(r, 150));
+    nudge();
   }
 
   const deadline = Date.now() + timeoutMs;
+  let lastSeen = before;
   while (Date.now() < deadline) {
-    if (rowCount() > before) return true;
-    // Keep nudging — Crunchbase loads in batches as the bottom sentinel enters view.
-    container.scrollTop = container.scrollHeight;
-    container.dispatchEvent(new Event("scroll", { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 500));
+    const now = rowCount();
+    if (now > before) return true;
+    // If something is loading slowly, give it more time. Otherwise keep
+    // alternating positions to nudge the observer.
+    if (now !== lastSeen) lastSeen = now;
+    nudge();
+    await new Promise((r) => setTimeout(r, 600));
   }
   return false;
 }

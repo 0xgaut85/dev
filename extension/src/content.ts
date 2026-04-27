@@ -59,8 +59,7 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === "SCRAPE_PROFILE") {
-    const lead = scrapePersonProfile();
-    sendResponse({ ok: true, lead });
+    scrapePersonProfile().then((lead) => sendResponse({ ok: true, lead }));
     return true;
   }
   if (msg.type === "SCROLL_FOR_MORE") {

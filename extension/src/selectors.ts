@@ -23,7 +23,21 @@ export const SELECTORS = {
   // Profile detail page elements
   profileName: 'h1, [class*="profile-name"]',
   profileHeadline: '[class*="description"], [class*="headline"]',
-  profileSocials: 'a[href*="twitter.com"], a[href*="x.com"], a[href*="linkedin.com"]',
+  // Crunchbase renders profile social links as anchors with explicit
+  // aria-labels: "View on Twitter", "View on LinkedIn", "View on Facebook",
+  // etc. Targeting those keeps us out of the page footer (which holds
+  // Crunchbase's *own* social links, not the profile owner's).
+  profileSocials: [
+    'a[aria-label="View on Twitter"]',
+    'a[aria-label="View on LinkedIn"]',
+    'a[aria-label="View on Facebook"]',
+    'a[aria-label="View on Instagram"]',
+    'a[title="View on Twitter"]',
+    'a[title="View on LinkedIn"]',
+    // The "Eiso Kant on Twitter" style link in the dedicated Twitter section
+    'a[href*="twitter.com/"][cb-link]',
+    'a[href*="x.com/"][cb-link]',
+  ].join(", "),
   profileImage: 'img[class*="profile"], profile-image img, identifier-multi-formatter img',
   // Industries/tags appear in chip lists on profile and on the row
   industryChip: 'chips-container a, [class*="chip"]',

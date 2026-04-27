@@ -316,12 +316,14 @@ async function runAutoSearch(): Promise<void> {
       }
       if (!scrollRes.grew) {
         consecutiveEmptyScrolls++;
-        if (consecutiveEmptyScrolls >= 2) {
+        if (consecutiveEmptyScrolls >= 3) {
           await setRunState({
-            lastError: `End of results reached (no new rows after scrolling, total ${seenUrls.size}).`,
+            lastError: `End of results reached (no new rows after 3 scroll attempts, total ${seenUrls.size}).`,
           });
           break;
         }
+        // Wait longer between retries so Crunchbase can fetch the next page.
+        await sleep(jitter(cfg.pageDelayMs * 2, 2000));
       } else {
         consecutiveEmptyScrolls = 0;
       }
