@@ -44,14 +44,25 @@ export async function POST(req: NextRequest) {
 
   const leads = await prisma.lead.findMany({
     where: { id: { in: parsed.data.leadIds } },
-    select: { id: true, photoUrl: true },
+    select: { id: true, name: true, photoUrl: true },
   });
 
-  const results: Array<{ leadId: string; ok: boolean; error?: string }> = [];
+  console.log(
+    `[enrich-ui] starting: ${leads.length} leads, ${leads.filter((l) => l.photoUrl).length} with photo, provider=${provider}`,
+  );
+
+  const results: Array<{
+    leadId: string;
+    name?: string;
+    ok: boolean;
+    error?: string;
+    ethnicity?: string | null;
+  }> = [];
 
   for (const lead of leads) {
     if (!lead.photoUrl) {
-      results.push({ leadId: lead.id, ok: false, error: "no_photo" });
+      console.log(`[enrich-ui] ${lead.id} (${lead.name}): no_photo`);
+      results.push({ leadId: lead.id, name: lead.name, ok: false, error: "no_photo" });
       continue;
     }
     try {
@@ -74,16 +85,25 @@ export async function POST(req: NextRequest) {
           rawResponse: r.raw as object,
         },
       });
-      results.push({ leadId: lead.id, ok: true });
-    } catch (err) {
+      console.log(
+        `[enrich-ui] ${lead.id} (${lead.name}): ok ethnicity=${r.ethnicity} ageLow=${r.ageLow} ageHigh=${r.ageHigh}`,
+      );
       results.push({
         leadId: lead.id,
-        ok: false,
-        error: err instanceof Error ? err.message : "unknown",
+        name: lead.name,
+        ok: true,
+        ethnicity: r.ethnicity,
       });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "unknown";
+      console.error(`[enrich-ui] ${lead.id} (${lead.name}) FAILED: ${msg}`);
+      results.push({ leadId: lead.id, name: lead.name, ok: false, error: msg });
     }
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 300));
   }
+
+  const okCount = results.filter((r) => r.ok).length;
+  console.log(`[enrich-ui] done: ${okCount}/${results.length} ok`);
 
   return NextResponse.json({ ok: true, results });
 }

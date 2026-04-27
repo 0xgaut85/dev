@@ -73,12 +73,34 @@ export default function LeadsTable({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leadIds: ids }),
       });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        results?: Array<{ leadId: string; ok: boolean; error?: string }>;
+      };
       if (!res.ok) {
-        const t = await res.text();
-        alert(`Enrichment failed: ${t}`);
-      } else {
-        router.refresh();
+        alert(`Enrichment failed (HTTP ${res.status}): ${data.error ?? "unknown error"}`);
+        return;
       }
+      const results = data.results ?? [];
+      const okCount = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length === 0) {
+        alert(`Enriched ${okCount}/${results.length} leads.`);
+      } else {
+        const errSummary: Record<string, number> = {};
+        for (const f of failed) {
+          const k = f.error ?? "unknown";
+          errSummary[k] = (errSummary[k] ?? 0) + 1;
+        }
+        const summary = Object.entries(errSummary)
+          .map(([k, v]) => `  ${v}× ${k}`)
+          .join("\n");
+        alert(
+          `Enriched ${okCount}/${results.length} leads.\n${failed.length} failed:\n${summary}\n\nFirst failure detail:\n${failed[0].error ?? "?"}`,
+        );
+      }
+      router.refresh();
     } finally {
       setBusy(null);
     }
