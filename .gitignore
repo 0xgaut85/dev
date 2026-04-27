@@ -1,0 +1,15 @@
+node_modules/
+.next/
+dist/
+build/
+*.log
+.env
+.env.local
+.env.production
+.DS_Store
+extension/dist/
+dashboard/.next/
+dashboard/node_modules/
+extension/node_modules/
+prisma/migrations/dev.db*
+*.tsbuildinfo

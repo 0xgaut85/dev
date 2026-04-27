@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Lead {
+  id              String   @id @default(cuid())
+  crunchbaseUrl   String   @unique
+  name            String
+  photoUrl        String?
+  headline        String?
+  company         String?
+  cbRank          Int?
+  location        String?
+  country         String?
+  industries      String[] @default([])
+  hasX            Boolean  @default(false)
+  hasLinkedIn     Boolean  @default(false)
+  xUrl            String?
+  linkedInUrl     String?
+  websiteUrl      String?
+  scrapedAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  enrichment      Enrichment?
+  outreach        OutreachStatus?
+
+  @@index([cbRank])
+  @@index([country])
+  @@index([hasX])
+}
+
+model Enrichment {
+  id           String   @id @default(cuid())
+  leadId       String   @unique
+  lead         Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  ageLow       Int?
+  ageHigh      Int?
+  ethnicity    String?
+  confidence   Float?
+  rawResponse  Json?
+  createdAt    DateTime @default(now())
+
+  @@index([ethnicity])
+  @@index([createdAt])
+}
+
+model OutreachStatus {
+  id         String   @id @default(cuid())
+  leadId     String   @unique
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  status     String   @default("new")
+  notes      String?
+  contactedAt DateTime?
+  updatedAt  DateTime @updatedAt
+}
