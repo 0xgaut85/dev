@@ -250,13 +250,15 @@ async function findNextButtonViaApi(
 }
 
 async function goNextPageWithVision(tabId: number, cfg: Settings): Promise<boolean> {
-  // 1. Get viewport metadata + a stable "first row" anchor for change detection.
+  // 1. Get viewport metadata + stable anchors for "did we advance?" detection.
   const vp = await sendToTab<{
     ok: boolean;
     width: number;
     height: number;
     devicePixelRatio: number;
     firstHref: string | null;
+    url: string;
+    counter: string | null;
   }>(tabId, { type: "GET_VIEWPORT" });
   if (!vp?.ok) {
     await setRunState({ lastError: "Could not read viewport from page." });
@@ -295,7 +297,12 @@ async function goNextPageWithVision(tabId: number, cfg: Settings): Promise<boole
   }
 
   // 4. Click at the returned CSS coordinates.
-  const click = await sendToTab<{ ok: boolean; targetTag?: string; error?: string }>(tabId, {
+  const click = await sendToTab<{
+    ok: boolean;
+    targetTag?: string;
+    targetClass?: string;
+    error?: string;
+  }>(tabId, {
     type: "CLICK_AT",
     cssX: find.cssX,
     cssY: find.cssY,
@@ -307,13 +314,34 @@ async function goNextPageWithVision(tabId: number, cfg: Settings): Promise<boole
     return false;
   }
 
-  // 5. Wait for the first row to swap out (= page actually advanced).
-  const turn = await sendToTab<{ ok: boolean; advanced: boolean }>(tabId, {
+  // 5. Wait for ANY of: first-row href change, URL change, or pager counter change.
+  const turn = await sendToTab<{
+    ok: boolean;
+    advanced: boolean;
+    via?: string;
+    firstHref?: string | null;
+    url?: string;
+    counter?: string | null;
+  }>(tabId, {
     type: "WAIT_FOR_PAGE_TURN",
     firstHrefBefore: vp.firstHref,
-    timeoutMs: 15000,
+    urlBefore: vp.url,
+    counterBefore: vp.counter,
+    timeoutMs: 18000,
   });
-  return !!turn?.advanced;
+  if (!turn?.advanced) {
+    // Surface specific diagnostics instead of letting the runner say "End of results".
+    const targetInfo = click.targetTag
+      ? `${click.targetTag.toLowerCase()}${click.targetClass ? "." + String(click.targetClass).split(/\s+/).slice(0, 2).join(".") : ""}`
+      : "?";
+    await setRunState({
+      lastError: `Click landed on <${targetInfo}> at (${Math.round(find.cssX)}, ${Math.round(
+        find.cssY,
+      )}) but page did not advance in 18s. counter before='${vp.counter ?? "?"}' / after='${turn?.counter ?? "?"}'. Likely Grok pointed at the wrong element, or this is the last page.`,
+    });
+    return false;
+  }
+  return true;
 }
 
 // ---------- main runner ----------
@@ -375,6 +403,14 @@ async function runAutoSearch(): Promise<void> {
       if (stopRequested) break;
       await setRunState({ page: batchNum });
 
+      // Crunchbase virtualizes the rows: only ~30-35 are in the DOM at first,
+      // even though a "page" holds 50. Scroll the grid container to materialize
+      // them all before scraping, then scroll back to top for the pager screenshot.
+      await sendToTab<{ ok: boolean; rowsAfter: number }>(tab.id, {
+        type: "EXHAUST_GRID",
+        maxMs: 12000,
+      });
+
       const list = await sendToTab<{ ok: boolean; leads: ScrapedLead[] }>(tab.id, {
         type: "SCRAPE_PAGE",
       });
@@ -424,9 +460,14 @@ async function runAutoSearch(): Promise<void> {
 
       const advanced = await goNextPageWithVision(tab.id, cfg);
       if (!advanced) {
-        await setRunState({
-          lastError: `End of results reached. Total scraped: ${seenUrls.size}.`,
-        });
+        // goNextPageWithVision has already set a specific lastError describing
+        // why pagination failed. Don't overwrite it with a generic message.
+        const cur = await getRunState();
+        if (!cur.lastError) {
+          await setRunState({
+            lastError: `Pagination stopped after ${seenUrls.size} leads.`,
+          });
+        }
         break;
       }
 
