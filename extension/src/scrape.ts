@@ -180,8 +180,92 @@ export function scrapePersonProfile(): ScrapedLead | null {
   };
 }
 
-export function findNextPageButton(): HTMLButtonElement | null {
-  return document.querySelector<HTMLButtonElement>(SELECTORS.nextPageButton);
+type ClickableEl = HTMLButtonElement | HTMLAnchorElement;
+
+function isVisible(el: Element): boolean {
+  const rect = (el as HTMLElement).getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  const style = window.getComputedStyle(el as HTMLElement);
+  return style.visibility !== "hidden" && style.display !== "none";
+}
+
+function isDisabled(el: Element): boolean {
+  const html = el as HTMLElement;
+  if ((html as HTMLButtonElement).disabled) return true;
+  if (html.getAttribute("aria-disabled") === "true") return true;
+  if (html.classList.contains("disabled")) return true;
+  if (html.classList.contains("mat-button-disabled")) return true;
+  if (html.hasAttribute("disabled")) return true;
+  return false;
+}
+
+export function findNextPageButton(): ClickableEl | null {
+  // 1) Direct selector match.
+  const direct = Array.from(
+    document.querySelectorAll<ClickableEl>(SELECTORS.nextPageButton)
+  ).filter((el) => isVisible(el) && !isDisabled(el));
+  if (direct.length > 0) return direct[0];
+
+  // 2) Heuristic: scan all buttons/links, look for ones whose accessible name
+  //    or icon implies "next". Crunchbase often uses a chevron-right icon
+  //    inside an unlabeled button.
+  const candidates = Array.from(
+    document.querySelectorAll<ClickableEl>("button, a[role='button']")
+  );
+  const matches = candidates.filter((el) => {
+    if (!isVisible(el) || isDisabled(el)) return false;
+    const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
+    const text = (el.textContent ?? "").trim().toLowerCase();
+    if (/^(next|next page|»|>)$/.test(text)) return true;
+    if (/next/.test(aria)) return true;
+    // Icon-only button with chevron_right
+    const icon = el.querySelector("mat-icon, svg[class*='chevron']");
+    if (icon) {
+      const iconText = (icon.textContent ?? "").trim().toLowerCase();
+      if (iconText === "chevron_right" || iconText === "keyboard_arrow_right") {
+        // require it to live in a paginator container
+        const container = el.closest(
+          "mat-paginator, [class*='paginator'], [class*='pagination']"
+        );
+        if (container) return true;
+      }
+    }
+    return false;
+  });
+  return matches[0] ?? null;
+}
+
+export function clickNextPage(): boolean {
+  const btn = findNextPageButton();
+  if (!btn) return false;
+  btn.scrollIntoView({ block: "center", inline: "center" });
+  btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  btn.click();
+  return true;
+}
+
+export async function waitForResultsRefresh(timeoutMs = 15000): Promise<boolean> {
+  // Capture fingerprint of current rows; wait until it changes.
+  const before = Array.from(
+    document.querySelectorAll<HTMLAnchorElement>(SELECTORS.personLinkInRow)
+  )
+    .slice(0, 5)
+    .map((a) => a.getAttribute("href"))
+    .join("|");
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 400));
+    const now = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>(SELECTORS.personLinkInRow)
+    )
+      .slice(0, 5)
+      .map((a) => a.getAttribute("href"))
+      .join("|");
+    if (now && now !== before) return true;
+  }
+  return false;
 }
 
 /**

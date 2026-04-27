@@ -1,4 +1,9 @@
-import { scrapeSearchResults, scrapePersonProfile, findNextPageButton } from "./scrape";
+import {
+  scrapeSearchResults,
+  scrapePersonProfile,
+  clickNextPage,
+  waitForResultsRefresh,
+} from "./scrape";
 import { SELECTORS, isPersonProfilePage } from "./selectors";
 import type { ScrapedLead } from "./types";
 
@@ -58,13 +63,17 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === "GO_NEXT_PAGE") {
-    const btn = findNextPageButton();
-    if (btn && !btn.disabled) {
-      btn.click();
-      sendResponse({ ok: true, clicked: true });
-    } else {
-      sendResponse({ ok: true, clicked: false });
-    }
+    (async () => {
+      const clicked = clickNextPage();
+      if (!clicked) {
+        sendResponse({ ok: true, clicked: false });
+        return;
+      }
+      // Wait for the results to actually change before responding so the
+      // background runner doesn't race ahead and scrape the same page twice.
+      const refreshed = await waitForResultsRefresh(15000);
+      sendResponse({ ok: true, clicked: true, refreshed });
+    })();
     return true;
   }
   if (msg.type === "WAIT_FOR_READY") {

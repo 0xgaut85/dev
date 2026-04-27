@@ -290,11 +290,22 @@ async function runAutoSearch(): Promise<void> {
         /* ignore */
       }
 
-      const next = await sendToTab<{ ok: boolean; clicked: boolean }>(tab.id, {
-        type: "GO_NEXT_PAGE",
-      });
+      const next = await sendToTab<{
+        ok: boolean;
+        clicked: boolean;
+        refreshed?: boolean;
+      }>(tab.id, { type: "GO_NEXT_PAGE" });
       if (!next?.clicked) {
-        await setRunState({ lastError: "No next page available." });
+        await setRunState({
+          lastError:
+            "Could not find a Next-page control. End of results, or markup changed.",
+        });
+        break;
+      }
+      if (!next.refreshed) {
+        await setRunState({
+          lastError: "Clicked Next but results didn't change. Stopping.",
+        });
         break;
       }
       await sleep(jitter(cfg.pageDelayMs, 2000));

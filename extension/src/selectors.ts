@@ -8,8 +8,18 @@
 export const SELECTORS = {
   // Container for any row that links to a person profile.
   personLinkInRow: 'a[href^="/person/"]',
-  // Pagination "next page" arrow on grid view.
-  nextPageButton: 'button[aria-label="Next page"], button[mat-icon-button][aria-label*="next" i]',
+  // Pagination "next page" — Crunchbase uses several variants over time.
+  nextPageButton: [
+    'button[aria-label="Next page"]',
+    'button[aria-label="Go to next page"]',
+    'button[aria-label*="next page" i]',
+    'button[mat-icon-button][aria-label*="next" i]',
+    'a[aria-label="Next page"]',
+    'a[aria-label*="next page" i]',
+    'button.next-page',
+    'button[data-testid*="next" i]',
+    'button[class*="next" i]',
+  ].join(", "),
   // Profile detail page elements
   profileName: 'h1, [class*="profile-name"]',
   profileHeadline: '[class*="description"], [class*="headline"]',
