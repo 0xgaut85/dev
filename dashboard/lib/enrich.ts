@@ -73,10 +73,7 @@ function chain(detectors: Detector[]): Detector {
 }
 
 export async function detectFromUrl(imageUrl: string): Promise<EnrichmentResult> {
-  // Default to grok-then-openai so a missing/invalid Grok model silently falls
-  // back to OpenAI instead of failing the whole row. Set ENRICH_PROVIDER=openai
-  // (or grok) to force a single provider.
-  const provider = (process.env.ENRICH_PROVIDER ?? "grok-then-openai").toLowerCase();
+  const provider = (process.env.ENRICH_PROVIDER ?? "grok").toLowerCase();
 
   // If a chosen provider's key isn't even set, skip it rather than fail loudly.
   const haveGrok = !!process.env.XAI_API_KEY;

@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { imageDataUrl, viewportWidth, viewportHeight, devicePixelRatio } = parsed.data;
-  const model = process.env.XAI_VISION_MODEL ?? "grok-2-vision-1212";
+  const model = process.env.XAI_VISION_MODEL ?? "grok-4-1-fast-non-reasoning";
   const baseUrl = process.env.XAI_API_BASE ?? "https://api.x.ai/v1";
 
   try {
