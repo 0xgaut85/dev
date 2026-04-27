@@ -5,7 +5,15 @@ const PUBLIC_PATHS = ["/login", "/api/login", "/_next", "/favicon.ico"];
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (pathname.startsWith("/api/ingest") || pathname.startsWith("/api/enrich")) {
+  // Bearer-token protected endpoints (used by the extension / automation).
+  // Match /api/ingest and /api/enrich exactly — NOT /api/enrich-ui, which is
+  // cookie-protected and used by the dashboard UI itself.
+  const isBearerEndpoint =
+    pathname === "/api/ingest" ||
+    pathname.startsWith("/api/ingest/") ||
+    pathname === "/api/enrich" ||
+    pathname.startsWith("/api/enrich/");
+  if (isBearerEndpoint) {
     const auth = req.headers.get("authorization") ?? "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     if (!process.env.INGEST_TOKEN || token !== process.env.INGEST_TOKEN) {
