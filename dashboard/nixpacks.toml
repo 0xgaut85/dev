@@ -7,7 +7,7 @@ cmds = ["npm install"]
 [phases.build]
 cmds = [
   "npx prisma generate",
-  "npx prisma migrate deploy",
+  "npx prisma db push --accept-data-loss --skip-generate",
   "npm run build"
 ]
 
