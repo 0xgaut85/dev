@@ -6,9 +6,6 @@ export const dynamic = "force-dynamic";
 type SearchParams = {
   hasX?: string;
   ethnicity?: string;
-  country?: string;
-  industry?: string;
-  excludeIndustry?: string;
   minRank?: string;
   maxRank?: string;
   minAge?: string;
@@ -28,14 +25,6 @@ export default async function Home({
   if (sp.hasX === "yes") where.hasX = true;
   else if (sp.hasX === "no") where.hasX = false;
 
-  if (sp.country) {
-    where.country = { equals: sp.country, mode: "insensitive" };
-  }
-
-  if (sp.industry) {
-    where.industries = { has: sp.industry };
-  }
-
   const minRank = sp.minRank ? parseInt(sp.minRank) : null;
   const maxRank = sp.maxRank ? parseInt(sp.maxRank) : null;
   if (minRank != null || maxRank != null) {
@@ -52,16 +41,13 @@ export default async function Home({
     take: 1000,
   });
 
-  // Post-filter by enrichment fields (these are nullable so easier in JS)
   const minAge = sp.minAge ? parseInt(sp.minAge) : null;
   const maxAge = sp.maxAge ? parseInt(sp.maxAge) : null;
   const ethnicity = sp.ethnicity ?? "";
   const minConfidence = sp.minConfidence ? parseFloat(sp.minConfidence) : 0;
-  const excludeIndustry = sp.excludeIndustry ?? "";
   const status = sp.status ?? "";
 
   const filtered = leads.filter((l) => {
-    if (excludeIndustry && l.industries.includes(excludeIndustry)) return false;
     if (status === "new" && l.outreach?.status && l.outreach.status !== "new") return false;
     if (status === "contacted" && l.outreach?.status !== "contacted") return false;
 
@@ -78,13 +64,6 @@ export default async function Home({
 
   const totalCount = await prisma.lead.count();
   const enrichedCount = await prisma.enrichment.count();
-
-  const countries = await prisma.lead.findMany({
-    where: { country: { not: null } },
-    select: { country: true },
-    distinct: ["country"],
-    take: 100,
-  });
 
   return (
     <main className="max-w-[1400px] mx-auto p-6">
@@ -125,7 +104,6 @@ export default async function Home({
             : null,
           outreachStatus: l.outreach?.status ?? "new",
         }))}
-        countries={countries.map((c) => c.country!).filter(Boolean)}
         searchParams={sp}
       />
     </main>

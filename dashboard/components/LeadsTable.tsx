@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 type Lead = {
@@ -28,11 +28,9 @@ type Lead = {
 
 export default function LeadsTable({
   leads,
-  countries,
   searchParams,
 }: {
   leads: Lead[];
-  countries: string[];
   searchParams: Record<string, string | undefined>;
 }) {
   const router = useRouter();
@@ -156,12 +154,6 @@ export default function LeadsTable({
     URL.revokeObjectURL(url);
   };
 
-  const allIndustries = useMemo(() => {
-    const set = new Set<string>();
-    leads.forEach((l) => l.industries.forEach((i) => set.add(i)));
-    return Array.from(set).sort();
-  }, [leads]);
-
   return (
     <div className="space-y-4">
       <div className="bg-white p-4 rounded-lg shadow-sm grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -174,48 +166,6 @@ export default function LeadsTable({
             <option value="">Any</option>
             <option value="no">No X account</option>
             <option value="yes">Has X account</option>
-          </select>
-        </Field>
-        <Field label="Country">
-          <select
-            value={searchParams.country ?? ""}
-            onChange={(e) => updateFilter("country", e.target.value)}
-            className="input"
-          >
-            <option value="">Any</option>
-            {countries.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Industry includes">
-          <select
-            value={searchParams.industry ?? ""}
-            onChange={(e) => updateFilter("industry", e.target.value)}
-            className="input"
-          >
-            <option value="">Any</option>
-            {allIndustries.map((i) => (
-              <option key={i} value={i}>
-                {i}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Industry excludes">
-          <select
-            value={searchParams.excludeIndustry ?? ""}
-            onChange={(e) => updateFilter("excludeIndustry", e.target.value)}
-            className="input"
-          >
-            <option value="">None</option>
-            {allIndustries.map((i) => (
-              <option key={i} value={i}>
-                {i}
-              </option>
-            ))}
           </select>
         </Field>
         <Field label="CB Rank min">
