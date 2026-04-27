@@ -10,8 +10,21 @@ const Schema = z.object({ leadIds: z.array(z.string()).min(1).max(50) });
 
 export async function POST(req: NextRequest) {
   const session = req.cookies.get("dashboard_auth")?.value;
-  if (!session || session !== process.env.DASHBOARD_PASSWORD) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const expected = process.env.DASHBOARD_PASSWORD;
+  if (!expected) {
+    return NextResponse.json(
+      { error: "DASHBOARD_PASSWORD not set on the server" },
+      { status: 500 }
+    );
+  }
+  if (!session || session !== expected) {
+    return NextResponse.json({ error: "unauthorized — please re-login" }, { status: 401 });
+  }
+  if (!process.env.FACEPP_API_KEY || !process.env.FACEPP_API_SECRET) {
+    return NextResponse.json(
+      { error: "FACEPP_API_KEY / FACEPP_API_SECRET not set on the server" },
+      { status: 500 }
+    );
   }
 
   const body = await req.json().catch(() => null);

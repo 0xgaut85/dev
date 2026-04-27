@@ -6,12 +6,20 @@ export type FaceppResult = {
   raw: unknown;
 };
 
-const FACEPP_URL = "https://api-us.faceplusplus.com/facepp/v3/detect";
+// Region: "us" (default, api-us.faceplusplus.com) or "cn" (api-cn.faceplusplus.com).
+// Set FACEPP_REGION=cn if you registered on the Mainland China console.
+function faceppBase(): string {
+  const region = (process.env.FACEPP_REGION ?? "us").toLowerCase();
+  return region === "cn"
+    ? "https://api-cn.faceplusplus.com"
+    : "https://api-us.faceplusplus.com";
+}
 
 export async function detectFromUrl(imageUrl: string): Promise<FaceppResult> {
   const apiKey = process.env.FACEPP_API_KEY;
   const apiSecret = process.env.FACEPP_API_SECRET;
   if (!apiKey || !apiSecret) throw new Error("Face++ credentials not configured");
+  const FACEPP_URL = `${faceppBase()}/facepp/v3/detect`;
 
   const form = new URLSearchParams();
   form.set("api_key", apiKey);
@@ -38,7 +46,15 @@ export async function detectFromUrl(imageUrl: string): Promise<FaceppResult> {
   };
 
   if (!res.ok || json.error_message) {
-    throw new Error(`Face++ error: ${json.error_message ?? res.statusText}`);
+    const code = json.error_message ?? res.statusText;
+    // AUTHENTICATION_ERROR usually means key/secret invalid OR the wrong region.
+    // INVALID_API_KEY/INVALID_API_SECRET are explicit. Surface a clear hint.
+    let hint = "";
+    if (/AUTHENTICATION_ERROR|INVALID_API_(KEY|SECRET)/i.test(code)) {
+      hint =
+        " — verify FACEPP_API_KEY / FACEPP_API_SECRET, and set FACEPP_REGION=cn if you registered on the China console.";
+    }
+    throw new Error(`Face++ error: ${code}${hint}`);
   }
 
   const face = json.faces?.[0];
