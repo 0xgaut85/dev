@@ -6,7 +6,7 @@
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        width: 340px;
+        width: 360px;
         padding: 12px;
         margin: 0;
         font-size: 13px;
@@ -16,6 +16,13 @@
         font-size: 14px;
         margin: 0 0 8px 0;
       }
+      h2 {
+        font-size: 12px;
+        margin: 12px 0 4px 0;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #64748b;
+      }
       label {
         display: block;
         margin-top: 8px;
@@ -23,6 +30,7 @@
         color: #475569;
       }
       input,
+      textarea,
       button {
         width: 100%;
         box-sizing: border-box;
@@ -31,6 +39,11 @@
         border-radius: 4px;
         border: 1px solid #cbd5e1;
         margin-top: 2px;
+        font-family: inherit;
+      }
+      textarea {
+        resize: vertical;
+        min-height: 48px;
       }
       button {
         cursor: pointer;
@@ -44,6 +57,9 @@
         color: #0f172a;
         border: 1px solid #cbd5e1;
       }
+      button.danger {
+        background: #b91c1c;
+      }
       button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
@@ -55,15 +71,39 @@
       .row > * {
         flex: 1;
       }
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 8px;
+        font-size: 12px;
+        color: #334155;
+      }
+      .check input[type="checkbox"] {
+        width: auto;
+        margin: 0;
+      }
       #status {
         margin-top: 10px;
         padding: 8px;
         border-radius: 4px;
         background: #f1f5f9;
         font-size: 12px;
-        max-height: 120px;
+        max-height: 140px;
         overflow-y: auto;
         white-space: pre-wrap;
+      }
+      #progress {
+        margin-top: 8px;
+        padding: 8px;
+        border-radius: 4px;
+        background: #ecfeff;
+        border: 1px solid #a5f3fc;
+        font-size: 12px;
+        display: none;
+      }
+      #progress.active {
+        display: block;
       }
       hr {
         border: none;
@@ -80,37 +120,66 @@
   <body>
     <h1>Crunchbase Lead Finder</h1>
 
+    <h2>Connection</h2>
     <label>API URL (Railway)</label>
     <input id="apiUrl" placeholder="https://your-app.up.railway.app" />
 
     <label>API Token</label>
     <input id="apiToken" type="password" placeholder="Bearer token" />
 
+    <h2>Auto-search</h2>
+    <label>Crunchbase seed URL (Discover/Search results with your filters applied)</label>
+    <textarea
+      id="seedUrl"
+      placeholder="https://www.crunchbase.com/discover/people/..."
+    ></textarea>
+
+    <div class="check">
+      <input id="profileDepth" type="checkbox" />
+      <label for="profileDepth" style="margin: 0">
+        Visit each profile for X / LinkedIn / photo
+      </label>
+    </div>
+
     <div class="row">
-      <div>
-        <label>Page delay (ms)</label>
-        <input id="pageDelayMs" type="number" min="2000" />
-      </div>
       <div>
         <label>Max pages</label>
         <input id="maxPages" type="number" min="1" max="50" />
       </div>
+      <div>
+        <label>Page delay (ms)</label>
+        <input id="pageDelayMs" type="number" min="2000" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Profile delay (ms)</label>
+        <input id="profileDelayMs" type="number" min="1500" />
+      </div>
+      <div>
+        <label>Batch size</label>
+        <input id="batchSize" type="number" min="1" max="100" />
+      </div>
     </div>
 
     <button id="save" class="secondary">Save settings</button>
+    <button id="start">Start auto-search</button>
+    <button id="stop" class="danger" disabled>Stop</button>
+
+    <div id="progress"></div>
 
     <hr />
 
-    <button id="scrapeOne">Scrape current page</button>
+    <h2>Manual</h2>
+    <button id="scrapeOne" class="secondary">Scrape current page</button>
     <button id="scrapeProfile" class="secondary">Scrape this profile</button>
-    <button id="autoScrape">Auto-scrape N pages</button>
-    <button id="stop" class="secondary" disabled>Stop</button>
 
     <div id="status">Ready.</div>
 
     <p class="small">
-      Tip: open a Crunchbase People search with your filters first, then click
-      "Auto-scrape N pages". Use a secondary CB account.
+      Tip: log into Crunchbase Pro, build a People search with the filters you
+      want, copy the URL, paste it above, then Start. Use a secondary CB account.
     </p>
 
     <script src="popup.js"></script>

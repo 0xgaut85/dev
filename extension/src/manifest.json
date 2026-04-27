@@ -3,7 +3,7 @@
   "name": "Crunchbase Lead Finder",
   "version": "0.1.0",
   "description": "Scrapes filtered Crunchbase People search results for outreach research.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "host_permissions": [
     "https://www.crunchbase.com/*",
     "http://localhost:3000/*",

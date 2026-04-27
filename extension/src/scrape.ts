@@ -184,4 +184,36 @@ export function findNextPageButton(): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>(SELECTORS.nextPageButton);
 }
 
+/**
+ * Merge a list-row lead with profile data. Profile data wins on every field
+ * that the profile page actually populated (non-null/non-empty), since the
+ * profile is the authoritative source for socials, photo, headline, industries.
+ */
+export function mergeListAndProfile(list: ScrapedLead, profile: ScrapedLead): ScrapedLead {
+  const pick = <T,>(p: T | null | undefined, l: T | null | undefined): T | null => {
+    if (p !== null && p !== undefined && p !== "") return p as T;
+    if (l !== null && l !== undefined && l !== "") return l as T;
+    return null;
+  };
+  return {
+    crunchbaseUrl: list.crunchbaseUrl || profile.crunchbaseUrl,
+    name: profile.name || list.name,
+    photoUrl: pick(profile.photoUrl, list.photoUrl),
+    headline: pick(profile.headline, list.headline),
+    company: pick(profile.company, list.company),
+    cbRank: list.cbRank ?? profile.cbRank ?? null,
+    location: pick(profile.location, list.location),
+    country: pick(profile.country, list.country),
+    industries:
+      profile.industries && profile.industries.length > 0
+        ? profile.industries
+        : list.industries ?? [],
+    hasX: profile.hasX ?? list.hasX ?? false,
+    hasLinkedIn: profile.hasLinkedIn ?? list.hasLinkedIn ?? false,
+    xUrl: pick(profile.xUrl, list.xUrl),
+    linkedInUrl: pick(profile.linkedInUrl, list.linkedInUrl),
+    websiteUrl: pick(profile.websiteUrl, list.websiteUrl),
+  };
+}
+
 export { isPeopleSearchPage, isPersonProfilePage };
