@@ -29,9 +29,15 @@ type Lead = {
 export default function LeadsTable({
   leads,
   searchParams,
+  ethnicityStats,
+  totalLeads,
+  unenriched,
 }: {
   leads: Lead[];
   searchParams: Record<string, string | undefined>;
+  ethnicityStats: Record<string, number>;
+  totalLeads: number;
+  unenriched: number;
 }) {
   const router = useRouter();
   const sp = useSearchParams();
@@ -197,24 +203,18 @@ export default function LeadsTable({
     URL.revokeObjectURL(url);
   };
 
-  const ethnicityCounts = leads.reduce(
-    (acc, l) => {
-      const e = l.enrichment?.ethnicity ?? "—not enriched—";
-      acc[e] = (acc[e] ?? 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>
-  );
-  const enrichedCount = leads.filter((l) => l.enrichment).length;
+  const enrichedTotal = totalLeads - unenriched;
 
   return (
     <div className="space-y-4">
       <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs p-3 rounded-lg">
-        <strong>Enrichment status:</strong> {enrichedCount}/{leads.length} leads have AI vision data.{" "}
-        {Object.entries(ethnicityCounts)
+        <strong>Enrichment status (whole DB):</strong> {enrichedTotal}/{totalLeads} leads have AI vision data.{" "}
+        {Object.entries(ethnicityStats)
+          .sort((a, b) => b[1] - a[1])
           .map(([k, v]) => `${k}: ${v}`)
           .join(" · ")}
-        {enrichedCount < leads.length && (
+        {unenriched > 0 && ` · —not enriched—: ${unenriched}`}
+        {enrichedTotal < totalLeads && (
           <span className="ml-1">
             Filtering by ethnicity hides un-enriched leads — select all and click <em>Enrich with AI</em> first.
           </span>
@@ -322,6 +322,32 @@ export default function LeadsTable({
         </button>
         <button onClick={exportCsv} className="btn">
           Export CSV {selected.size > 0 ? `(${selected.size})` : "(all filtered)"}
+        </button>
+        <button
+          onClick={async () => {
+            setBusy("normalizing");
+            try {
+              const res = await fetch("/api/normalize-ethnicity", { method: "POST" });
+              const data = await res.json();
+              if (!res.ok) {
+                alert(`Normalize failed: ${data.error ?? res.status}`);
+              } else {
+                alert(
+                  `Normalized ${data.updated}/${data.total} rows.\n\nBefore: ${JSON.stringify(
+                    data.before,
+                  )}\n\nAfter: ${JSON.stringify(data.after)}`,
+                );
+                router.refresh();
+              }
+            } finally {
+              setBusy(null);
+            }
+          }}
+          disabled={busy !== null}
+          className="btn"
+          title="Re-bucket existing 'white'/'Caucasian'/etc. into WHITE/BLACK/ASIAN/INDIA"
+        >
+          {busy === "normalizing" ? "Fixing…" : "Fix ethnicity buckets"}
         </button>
         <button
           onClick={deleteSelected}

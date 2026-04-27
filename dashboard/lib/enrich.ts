@@ -16,6 +16,42 @@ export type EnrichmentResult = {
   raw: unknown;
 };
 
+/**
+ * Map any ethnicity string (case-insensitive, common variants) to one of
+ * our four canonical buckets, or null if we can't classify confidently.
+ */
+export function normalizeEthnicity(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+
+  if (["white", "caucasian", "european", "euro"].includes(v)) return "WHITE";
+  if (["black", "african", "african american", "afro", "afro-caribbean"].includes(v))
+    return "BLACK";
+  if (
+    [
+      "asian",
+      "east asian",
+      "east_asian",
+      "southeast asian",
+      "south-east asian",
+      "oriental",
+    ].includes(v)
+  )
+    return "ASIAN";
+  if (
+    ["india", "indian", "south asian", "south-asian", "south_asian", "desi"].includes(v)
+  )
+    return "INDIA";
+
+  if (/\bwhite\b|\bcaucas/.test(v) || v.includes("european")) return "WHITE";
+  if (/\bblack\b|african/.test(v)) return "BLACK";
+  if (/\bindia\b|south[\s_-]?asian|desi/.test(v)) return "INDIA";
+  if (/asian|chinese|japanese|korean|vietnamese|thai|filipino/.test(v)) return "ASIAN";
+
+  return null;
+}
+
 type Detector = (url: string) => Promise<EnrichmentResult>;
 
 function chain(detectors: Detector[]): Detector {

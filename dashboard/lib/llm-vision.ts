@@ -1,7 +1,7 @@
 // LLM-vision based age + ethnicity inference (OpenAI GPT-4o-mini).
 // Returns the shared EnrichmentResult shape used by the dispatcher.
 
-import type { EnrichmentResult } from "./enrich";
+import { normalizeEthnicity, type EnrichmentResult } from "./enrich";
 
 type LlmGuess = {
   age: number | null;
@@ -73,9 +73,7 @@ export async function detectFromUrlLlm(imageUrl: string): Promise<EnrichmentResu
     throw new Error(`OpenAI returned non-JSON: ${raw.slice(0, 200)}`);
   }
 
-  // Sanitize.
-  const allowed = new Set(["WHITE", "BLACK", "ASIAN", "INDIA"]);
-  const eth = parsed.ethnicity && allowed.has(parsed.ethnicity) ? parsed.ethnicity : null;
+  const eth = normalizeEthnicity(parsed.ethnicity);
   const age = typeof parsed.age === "number" && parsed.age >= 5 && parsed.age <= 110
     ? Math.round(parsed.age)
     : null;

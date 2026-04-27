@@ -47,20 +47,37 @@ export default async function Home({
   const minConfidence = sp.minConfidence ? parseFloat(sp.minConfidence) : 0;
   const status = sp.status ?? "";
 
+  // Compare ethnicity case-insensitively so legacy rows ("white", "White") still match.
+  const ethnicityNorm = ethnicity.trim().toUpperCase();
+
   const filtered = leads.filter((l) => {
     if (status === "new" && l.outreach?.status && l.outreach.status !== "new") return false;
     if (status === "contacted" && l.outreach?.status !== "contacted") return false;
 
-    if (ethnicity || minAge != null || maxAge != null || minConfidence > 0) {
+    if (ethnicityNorm || minAge != null || maxAge != null || minConfidence > 0) {
       const e = l.enrichment;
       if (!e) return false;
-      if (ethnicity && e.ethnicity !== ethnicity) return false;
+      if (ethnicityNorm && (e.ethnicity ?? "").trim().toUpperCase() !== ethnicityNorm) return false;
       if (minConfidence > 0 && (e.confidence ?? 0) < minConfidence) return false;
       if (minAge != null && (e.ageHigh ?? 0) < minAge) return false;
       if (maxAge != null && (e.ageLow ?? 999) > maxAge) return false;
     }
     return true;
   });
+
+  // Stats over the un-filtered set, so the banner shows what's actually in the DB
+  // regardless of which ethnicity is currently selected in the dropdown.
+  const ethnicityStats: Record<string, number> = {};
+  let unenriched = 0;
+  for (const l of leads) {
+    const v = l.enrichment?.ethnicity;
+    if (!v) {
+      unenriched++;
+    } else {
+      const k = v.trim().toUpperCase() || "—";
+      ethnicityStats[k] = (ethnicityStats[k] ?? 0) + 1;
+    }
+  }
 
   const totalCount = await prisma.lead.count();
   const enrichedCount = await prisma.enrichment.count();
@@ -105,6 +122,9 @@ export default async function Home({
           outreachStatus: l.outreach?.status ?? "new",
         }))}
         searchParams={sp}
+        ethnicityStats={ethnicityStats}
+        totalLeads={leads.length}
+        unenriched={unenriched}
       />
     </main>
   );

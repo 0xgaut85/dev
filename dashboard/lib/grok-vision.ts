@@ -5,11 +5,11 @@
 // Models with vision (as of 2026): grok-2-vision-1212, grok-4-vision (if
 // available on your account). Set XAI_VISION_MODEL to override.
 
-import type { EnrichmentResult } from "./enrich";
+import { normalizeEthnicity, type EnrichmentResult } from "./enrich";
 
 type LlmGuess = {
   age: number | null;
-  ethnicity: "WHITE" | "BLACK" | "ASIAN" | "INDIA" | null;
+  ethnicity: string | null;
   confidence: number | null;
   notes?: string | null;
 };
@@ -83,8 +83,7 @@ export async function detectFromUrlGrok(imageUrl: string): Promise<EnrichmentRes
     throw new Error(`Grok returned non-JSON: ${cleaned.slice(0, 200)}`);
   }
 
-  const allowed = new Set(["WHITE", "BLACK", "ASIAN", "INDIA"]);
-  const eth = parsed.ethnicity && allowed.has(parsed.ethnicity) ? parsed.ethnicity : null;
+  const eth = normalizeEthnicity(parsed.ethnicity);
   const age =
     typeof parsed.age === "number" && parsed.age >= 5 && parsed.age <= 110
       ? Math.round(parsed.age)
