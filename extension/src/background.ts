@@ -1,5 +1,6 @@
 import type { ScrapedLead, Settings, RunState } from "./types";
 import { DEFAULT_SETTINGS, DEFAULT_RUN_STATE } from "./types";
+import { mergeListAndProfile } from "./scrape";
 
 // ---------- helpers ----------
 
@@ -89,14 +90,44 @@ async function sendToTab<T>(tabId: number, msg: unknown, retries = 3): Promise<T
   return null;
 }
 
+async function ensureContentScript(tabId: number): Promise<boolean> {
+  // Try a PING first; if it fails, inject content.js programmatically.
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "PING" });
+    return true;
+  } catch {
+    /* not loaded — inject */
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    await sleep(400);
+    return true;
+  } catch (err) {
+    await setRunState({
+      lastError: `Could not inject content script: ${
+        err instanceof Error ? err.message : "?"
+      }`,
+    });
+    return false;
+  }
+}
+
 async function waitForReady(
   tabId: number,
   mode: "list" | "profile",
   timeoutMs = 15000
 ): Promise<{ ok: boolean; reason?: string }> {
-  // Content script may not be ready immediately after navigation; retry sending.
+  // Make sure content script is actually present before polling.
   const deadline = Date.now() + timeoutMs + 5000;
+  let injected = false;
   while (Date.now() < deadline) {
+    if (!injected) {
+      const ok = await ensureContentScript(tabId);
+      if (ok) injected = true;
+    }
     const r = await sendToTab<{ ok: boolean; reason?: string }>(
       tabId,
       { type: "WAIT_FOR_READY", mode, timeoutMs: 4000 },
@@ -155,7 +186,6 @@ async function enrichWithProfileVisits(
   listLeads: ScrapedLead[],
   cfg: Settings
 ): Promise<ScrapedLead[]> {
-  const { mergeListAndProfile } = await import("./scrape");
   const out: ScrapedLead[] = [];
   for (const lead of listLeads) {
     if (stopRequested) break;

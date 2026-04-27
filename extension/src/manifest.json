@@ -6,17 +6,22 @@
   "permissions": ["storage", "activeTab", "scripting", "tabs"],
   "host_permissions": [
     "https://www.crunchbase.com/*",
+    "https://crunchbase.com/*",
+    "https://*.crunchbase.com/*",
     "http://localhost:3000/*",
     "https://*.up.railway.app/*",
     "https://*.railway.app/*"
   ],
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://www.crunchbase.com/*"],
+      "matches": [
+        "https://www.crunchbase.com/*",
+        "https://crunchbase.com/*",
+        "https://*.crunchbase.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

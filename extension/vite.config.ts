@@ -2,21 +2,31 @@ import { defineConfig } from "vite";
 import { resolve } from "path";
 import { copyFileSync, mkdirSync } from "fs";
 
+// Build each entry as a self-contained IIFE — Chrome content scripts cannot be
+// ES modules. Service worker can be a module, but for consistency and to avoid
+// shared chunks (which break content scripts), we inline everything per entry.
+//
+// Vite/Rollup only supports `inlineDynamicImports` with a single input, so we
+// pick the entry from an env var and build all three in series via npm scripts.
+
+const ENTRY = process.env.ENTRY ?? "background";
+
+const entries: Record<string, string> = {
+  background: "src/background.ts",
+  content: "src/content.ts",
+  popup: "src/popup.ts",
+};
+
 export default defineConfig({
   build: {
     outDir: "dist",
-    emptyOutDir: true,
+    emptyOutDir: ENTRY === "background", // only first entry clears the dir
     rollupOptions: {
-      input: {
-        background: resolve(__dirname, "src/background.ts"),
-        content: resolve(__dirname, "src/content.ts"),
-        popup: resolve(__dirname, "src/popup.ts"),
-      },
+      input: resolve(__dirname, entries[ENTRY]),
       output: {
-        entryFileNames: "[name].js",
-        chunkFileNames: "[name].js",
-        assetFileNames: "[name].[ext]",
-        format: "esm",
+        entryFileNames: `${ENTRY}.js`,
+        format: "iife",
+        inlineDynamicImports: true,
       },
     },
     target: "esnext",
@@ -26,6 +36,8 @@ export default defineConfig({
     {
       name: "copy-static",
       closeBundle() {
+        // Only copy assets on the last build pass.
+        if (ENTRY !== "popup") return;
         const dist = resolve(__dirname, "dist");
         mkdirSync(dist, { recursive: true });
         copyFileSync(resolve(__dirname, "src/manifest.json"), resolve(dist, "manifest.json"));
