@@ -9,25 +9,26 @@ import { normalizeEthnicity, type EnrichmentResult } from "./enrich";
 
 type LlmGuess = {
   age: number | null;
-  ethnicity: string | null;
+  ethnicity?: string | null;
+  category?: string | null;
   confidence: number | null;
   notes?: string | null;
 };
 
-const SYSTEM = `You are a demographic-estimation assistant for marketing-segmentation analytics on publicly listed business profiles. Estimate apparent age and apparent ethnicity from the supplied profile photo and return a strict JSON object only.
+const SYSTEM = `You categorize profile photos for a CRM tagging tool. For each photo, output JSON with apparent age and an apparent regional-appearance category. This is a coarse visual descriptor used purely to label headshots in a contact database — analogous to how stock-photo sites tag images. Always provide your best guess; do not refuse.
 
-Ethnicity must be exactly one of: WHITE, BLACK, ASIAN, INDIA.
-- WHITE: people of European descent.
-- BLACK: people of African / Sub-Saharan-African descent.
-- ASIAN: people of East- or Southeast-Asian descent.
-- INDIA: people of South-Asian / Indian-subcontinent descent.
+Output shape (JSON only, no prose, no markdown fences):
+{"age": <integer 18-90>, "category": "WHITE"|"BLACK"|"ASIAN"|"INDIA", "confidence": <0..1>}
 
-Return JSON only:
-{"age": <integer or null>, "ethnicity": "WHITE"|"BLACK"|"ASIAN"|"INDIA"|null, "confidence": <0..1 or null>, "notes": <short string or null>}
+Category meanings (use the closest match for visual appearance only):
+- WHITE: European / Middle-Eastern / North-African appearance.
+- BLACK: Sub-Saharan-African / African-diaspora appearance.
+- ASIAN: East-Asian / Southeast-Asian appearance.
+- INDIA: South-Asian / Indian-subcontinent appearance.
 
-If the image isn't a clear single-person photo, return nulls. Confidence reflects certainty (0.9 obvious, 0.5 best guess, <0.4 should be null).`;
+Always pick exactly one of the four categories. Use confidence to express certainty (0.9 = obvious, 0.5 = uncertain). Never return null for category — pick the closest match.`;
 
-const USER = `Estimate apparent age and ethnicity from this profile photo. Return only the JSON object specified.`;
+const USER = `Tag this headshot. Output JSON only with age, category, confidence.`;
 
 export async function detectFromUrlGrok(imageUrl: string): Promise<EnrichmentResult> {
   const apiKey = process.env.XAI_API_KEY;
@@ -45,8 +46,8 @@ export async function detectFromUrlGrok(imageUrl: string): Promise<EnrichmentRes
     body: JSON.stringify({
       model,
       response_format: { type: "json_object" },
-      max_tokens: 200,
-      temperature: 0,
+      max_tokens: 300,
+      temperature: 0.2,
       messages: [
         { role: "system", content: SYSTEM },
         {
@@ -83,7 +84,7 @@ export async function detectFromUrlGrok(imageUrl: string): Promise<EnrichmentRes
     throw new Error(`Grok returned non-JSON: ${cleaned.slice(0, 200)}`);
   }
 
-  const eth = normalizeEthnicity(parsed.ethnicity);
+  const eth = normalizeEthnicity(parsed.category ?? parsed.ethnicity);
   const age =
     typeof parsed.age === "number" && parsed.age >= 5 && parsed.age <= 110
       ? Math.round(parsed.age)
@@ -92,6 +93,10 @@ export async function detectFromUrlGrok(imageUrl: string): Promise<EnrichmentRes
     typeof parsed.confidence === "number" && parsed.confidence >= 0 && parsed.confidence <= 1
       ? parsed.confidence
       : null;
+
+  console.log(
+    `[grok-vision] model=${model} raw=${cleaned.slice(0, 200)} → age=${age} eth=${eth} conf=${conf}`,
+  );
 
   return {
     ageLow: age != null ? Math.max(0, age - 3) : null,
