@@ -1,7 +1,7 @@
 // LLM-vision based age + ethnicity inference (OpenAI GPT-4o-mini).
 // Returns the shared EnrichmentResult shape used by the dispatcher.
 
-import { normalizeEthnicity, type EnrichmentResult } from "./enrich";
+import { normalizeEthnicity, type EnrichmentInput, type EnrichmentResult } from "./enrich";
 
 type LlmGuess = {
   age: number | null;
@@ -23,12 +23,19 @@ Return JSON in this exact shape, with no commentary:
 
 If the image isn't a clear single-person photo, or you genuinely cannot tell, return nulls — do not guess wildly. Confidence should reflect your certainty (0.9 = obvious, 0.5 = best guess, below 0.4 = should usually be null).`;
 
-const USER = `Estimate apparent age and ethnicity from this profile photo. Return only the JSON object specified.`;
+function userMessage(name: string | null | undefined): string {
+  const safeName = (name ?? "").trim();
+  if (!safeName) {
+    return `Estimate apparent age and ethnicity from this profile photo. Return only the JSON.`;
+  }
+  return `Estimate apparent age and ethnicity from this photo. The person's name is "${safeName}" — use it as a strong cultural signal in addition to the photo. Return JSON only.`;
+}
 
-export async function detectFromUrlLlm(imageUrl: string): Promise<EnrichmentResult> {
+export async function detectFromUrlLlm(input: EnrichmentInput): Promise<EnrichmentResult> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY not configured");
 
+  const { imageUrl, name } = input;
   const model = process.env.OPENAI_VISION_MODEL ?? "gpt-4o-mini";
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -47,7 +54,7 @@ export async function detectFromUrlLlm(imageUrl: string): Promise<EnrichmentResu
         {
           role: "user",
           content: [
-            { type: "text", text: USER },
+            { type: "text", text: userMessage(name) },
             { type: "image_url", image_url: { url: imageUrl } },
           ],
         },

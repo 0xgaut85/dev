@@ -52,15 +52,20 @@ export function normalizeEthnicity(raw: string | null | undefined): string | nul
   return null;
 }
 
-type Detector = (url: string) => Promise<EnrichmentResult>;
+export type EnrichmentInput = {
+  imageUrl: string;
+  name?: string | null;
+};
+
+type Detector = (input: EnrichmentInput) => Promise<EnrichmentResult>;
 
 function chain(detectors: Detector[]): Detector {
-  return async (imageUrl: string) => {
+  return async (input: EnrichmentInput) => {
     let lastErr: unknown = null;
     let lastResult: EnrichmentResult | null = null;
     for (const d of detectors) {
       try {
-        const r = await d(imageUrl);
+        const r = await d(input);
         if (r.ethnicity) return r;
         lastResult = r;
       } catch (err) {
@@ -72,27 +77,26 @@ function chain(detectors: Detector[]): Detector {
   };
 }
 
-export async function detectFromUrl(imageUrl: string): Promise<EnrichmentResult> {
+export async function detectFromUrl(input: EnrichmentInput): Promise<EnrichmentResult> {
   const provider = (process.env.ENRICH_PROVIDER ?? "grok").toLowerCase();
 
-  // If a chosen provider's key isn't even set, skip it rather than fail loudly.
   const haveGrok = !!process.env.XAI_API_KEY;
   const haveOpenAI = !!process.env.OPENAI_API_KEY;
 
   switch (provider) {
     case "grok":
       if (!haveGrok) throw new Error("ENRICH_PROVIDER=grok but XAI_API_KEY is not set");
-      return detectFromUrlGrok(imageUrl);
+      return detectFromUrlGrok(input);
     case "openai":
       if (!haveOpenAI) throw new Error("ENRICH_PROVIDER=openai but OPENAI_API_KEY is not set");
-      return detectFromUrlLlm(imageUrl);
+      return detectFromUrlLlm(input);
     case "grok-then-openai": {
       const chainList: Detector[] = [];
       if (haveGrok) chainList.push(detectFromUrlGrok);
       if (haveOpenAI) chainList.push(detectFromUrlLlm);
       if (chainList.length === 0)
         throw new Error("Neither XAI_API_KEY nor OPENAI_API_KEY is set");
-      return chain(chainList)(imageUrl);
+      return chain(chainList)(input);
     }
     case "openai-then-grok": {
       const chainList: Detector[] = [];
@@ -100,7 +104,7 @@ export async function detectFromUrl(imageUrl: string): Promise<EnrichmentResult>
       if (haveGrok) chainList.push(detectFromUrlGrok);
       if (chainList.length === 0)
         throw new Error("Neither OPENAI_API_KEY nor XAI_API_KEY is set");
-      return chain(chainList)(imageUrl);
+      return chain(chainList)(input);
     }
     default:
       throw new Error(`Unknown ENRICH_PROVIDER: ${provider}`);

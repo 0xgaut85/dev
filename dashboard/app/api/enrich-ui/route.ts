@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
       continue;
     }
     try {
-      const r = await detectFromUrl(lead.photoUrl);
+      const r = await detectFromUrl({ imageUrl: lead.photoUrl, name: lead.name });
       await prisma.enrichment.upsert({
         where: { leadId: lead.id },
         create: {

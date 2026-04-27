@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
 
   const leads = await prisma.lead.findMany({
     where: { id: { in: parsed.data.leadIds } },
-    select: { id: true, photoUrl: true },
+    select: { id: true, name: true, photoUrl: true },
   });
 
   const results: Array<{ leadId: string; ok: boolean; error?: string }> = [];
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
       continue;
     }
     try {
-      const r = await detectFromUrl(lead.photoUrl);
+      const r = await detectFromUrl({ imageUrl: lead.photoUrl, name: lead.name });
       await prisma.enrichment.upsert({
         where: { leadId: lead.id },
         create: {
