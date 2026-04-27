@@ -20,14 +20,23 @@ export async function POST(req: NextRequest) {
   if (!session || session !== expected) {
     return NextResponse.json({ error: "unauthorized — please re-login" }, { status: 401 });
   }
-  const provider = (process.env.ENRICH_PROVIDER ?? "openai").toLowerCase();
-  if ((provider === "openai" || provider === "openai-then-facepp") && !process.env.OPENAI_API_KEY) {
+  const provider = (process.env.ENRICH_PROVIDER ?? "grok").toLowerCase();
+  const needsGrok = provider.startsWith("grok");
+  const needsOpenAI = provider.includes("openai");
+  const needsFacepp = provider.includes("facepp");
+  if (needsGrok && !process.env.XAI_API_KEY) {
+    return NextResponse.json(
+      { error: "XAI_API_KEY not set on the server" },
+      { status: 500 }
+    );
+  }
+  if (needsOpenAI && !process.env.OPENAI_API_KEY) {
     return NextResponse.json(
       { error: "OPENAI_API_KEY not set on the server" },
       { status: 500 }
     );
   }
-  if (provider === "facepp" && (!process.env.FACEPP_API_KEY || !process.env.FACEPP_API_SECRET)) {
+  if (needsFacepp && (!process.env.FACEPP_API_KEY || !process.env.FACEPP_API_SECRET)) {
     return NextResponse.json(
       { error: "FACEPP_API_KEY / FACEPP_API_SECRET not set on the server" },
       { status: 500 }
