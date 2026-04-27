@@ -78,6 +78,49 @@ export default function LeadsTable({
     }
   };
 
+  const deleteLead = async (id: string) => {
+    if (!confirm("Delete this lead permanently?")) return;
+    setBusy("deleting");
+    try {
+      const res = await fetch("/api/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadIds: [id] }),
+      });
+      if (res.ok) {
+        const next = new Set(selected);
+        next.delete(id);
+        setSelected(next);
+        router.refresh();
+      } else {
+        alert("Delete failed.");
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} lead(s) permanently?`)) return;
+    setBusy("deleting");
+    try {
+      const res = await fetch("/api/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadIds: Array.from(selected) }),
+      });
+      if (res.ok) {
+        setSelected(new Set());
+        router.refresh();
+      } else {
+        alert("Delete failed.");
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const markContacted = async () => {
     if (selected.size === 0) return;
     setBusy("marking");
@@ -154,8 +197,29 @@ export default function LeadsTable({
     URL.revokeObjectURL(url);
   };
 
+  const ethnicityCounts = leads.reduce(
+    (acc, l) => {
+      const e = l.enrichment?.ethnicity ?? "—not enriched—";
+      acc[e] = (acc[e] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>
+  );
+  const enrichedCount = leads.filter((l) => l.enrichment).length;
+
   return (
     <div className="space-y-4">
+      <div className="bg-amber-50 border border-amber-200 text-amber-900 text-xs p-3 rounded-lg">
+        <strong>Enrichment status:</strong> {enrichedCount}/{leads.length} leads have Face++ data.{" "}
+        {Object.entries(ethnicityCounts)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(" · ")}
+        {enrichedCount < leads.length && (
+          <span className="ml-1">
+            Filtering by ethnicity hides un-enriched leads — select all and click <em>Enrich with Face++</em> first.
+          </span>
+        )}
+      </div>
       <div className="bg-white p-4 rounded-lg shadow-sm grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
         <Field label="Has X">
           <select
@@ -258,6 +322,13 @@ export default function LeadsTable({
         </button>
         <button onClick={exportCsv} className="btn">
           Export CSV {selected.size > 0 ? `(${selected.size})` : "(all filtered)"}
+        </button>
+        <button
+          onClick={deleteSelected}
+          disabled={selected.size === 0 || busy !== null}
+          className="btn-danger"
+        >
+          {busy === "deleting" ? "Deleting…" : "Delete"}
         </button>
       </div>
 
@@ -363,13 +434,23 @@ export default function LeadsTable({
                   </span>
                 </td>
                 <td className="p-2">
-                  <a
-                    href={l.crunchbaseUrl}
-                    target="_blank"
-                    className="text-blue-600 text-xs"
-                  >
-                    CB ↗
-                  </a>
+                  <div className="flex items-center gap-2 justify-end">
+                    <a
+                      href={l.crunchbaseUrl}
+                      target="_blank"
+                      className="text-blue-600 text-xs"
+                    >
+                      CB ↗
+                    </a>
+                    <button
+                      onClick={() => deleteLead(l.id)}
+                      disabled={busy !== null}
+                      title="Delete this lead"
+                      className="text-slate-400 hover:text-red-600 text-base leading-none px-1"
+                    >
+                      ×
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -415,6 +496,20 @@ export default function LeadsTable({
           background: rgb(30 41 59);
         }
         .btn-primary:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .btn-danger {
+          padding: 0.375rem 0.75rem;
+          border-radius: 0.375rem;
+          background: rgb(185 28 28);
+          color: white;
+          border: none;
+        }
+        .btn-danger:hover:not(:disabled) {
+          background: rgb(153 27 27);
+        }
+        .btn-danger:disabled {
           opacity: 0.5;
           cursor: not-allowed;
         }

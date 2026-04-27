@@ -310,6 +310,134 @@ export async function scrollForMore(timeoutMs = 20000): Promise<boolean> {
   return false;
 }
 
+/**
+ * Crunchbase Discover shows a pager at the top of the results header:
+ *   "1-50 of 1,163 results"  [<]  [>]
+ * The next-arrow is a button with an icon. We locate it by finding the
+ * element containing the "X-Y of Z results" text and grabbing the right-most
+ * clickable arrow within that header row.
+ */
+function findResultsHeader(): HTMLElement | null {
+  // Look for any element whose direct text matches the "of N results" pattern.
+  const all = document.querySelectorAll<HTMLElement>(
+    "span, div, results-info, page-buttons, paginator"
+  );
+  for (const el of all) {
+    const txt = (el.textContent ?? "").trim();
+    // Must mention "of <num> results" but not be huge (avoid <body>).
+    if (/\d[\d,]*\s*-\s*\d[\d,]*\s+of\s+\d[\d,]*\s+results/i.test(txt) && txt.length < 200) {
+      return el;
+    }
+  }
+  return null;
+}
+
+function findNextPageButton(): HTMLElement | null {
+  // Prefer aria-labelled buttons anywhere on the page first.
+  const labelled = document.querySelector<HTMLElement>(SELECTORS.nextPageButton);
+  if (labelled && isClickable(labelled)) return labelled;
+
+  // Otherwise look near the results header for the right-most arrow button.
+  const header = findResultsHeader();
+  if (header) {
+    // Walk up a few levels — buttons usually live in a sibling container.
+    let scope: HTMLElement | null = header;
+    for (let i = 0; i < 4 && scope; i++) {
+      const buttons = Array.from(
+        scope.querySelectorAll<HTMLElement>("button, a")
+      ).filter(isClickable);
+      if (buttons.length >= 2) {
+        // The pager has [prev][next]. Pick the last enabled one whose
+        // bounding-box sits to the right of the header text.
+        const headerRect = header.getBoundingClientRect();
+        const candidates = buttons.filter((b) => {
+          const r = b.getBoundingClientRect();
+          return r.left >= headerRect.left && r.width < 80 && r.height < 80;
+        });
+        const ordered = candidates.length >= 2 ? candidates : buttons;
+        // The next button is the right-most one that isn't disabled.
+        const sorted = [...ordered].sort(
+          (a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left
+        );
+        const last = sorted[sorted.length - 1];
+        if (last && isClickable(last) && !isDisabled(last)) return last;
+      }
+      scope = scope.parentElement;
+    }
+  }
+  return null;
+}
+
+function isClickable(el: HTMLElement): boolean {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return false;
+  const cs = window.getComputedStyle(el);
+  if (cs.visibility === "hidden" || cs.display === "none") return false;
+  return true;
+}
+
+function isDisabled(el: HTMLElement): boolean {
+  if (el.hasAttribute("disabled")) return true;
+  if (el.getAttribute("aria-disabled") === "true") return true;
+  if (el.classList.contains("disabled") || el.classList.contains("mat-mdc-button-disabled"))
+    return true;
+  return false;
+}
+
+/**
+ * Click the "Next page" arrow next to the "1-50 of N results" header.
+ * Returns true if the click fired AND new rows replaced the previous set.
+ */
+export async function clickNextPage(timeoutMs = 15000): Promise<boolean> {
+  const btn = findNextPageButton();
+  if (!btn) return false;
+
+  // Capture an "anchor" — first row's href — so we can detect refresh.
+  const firstHrefBefore =
+    document.querySelector<HTMLAnchorElement>(SELECTORS.personLinkInRow)?.href ?? null;
+  const urlBefore = location.href;
+
+  btn.scrollIntoView({ block: "center", behavior: "instant" as ScrollBehavior });
+  await new Promise((r) => setTimeout(r, 100));
+
+  const rect = btn.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy } as const;
+  btn.dispatchEvent(new PointerEvent("pointerdown", opts));
+  btn.dispatchEvent(new MouseEvent("mousedown", opts));
+  btn.dispatchEvent(new PointerEvent("pointerup", opts));
+  btn.dispatchEvent(new MouseEvent("mouseup", opts));
+  btn.dispatchEvent(new MouseEvent("click", opts));
+  (btn as HTMLButtonElement).click?.();
+
+  // Wait for either the URL to change (pageId param updates) or the first row
+  // to swap out — whichever happens first.
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 300));
+    if (location.href !== urlBefore) {
+      // Then wait for the first new row to render (lazy).
+      const rowDeadline = Date.now() + 8000;
+      while (Date.now() < rowDeadline) {
+        const firstNow =
+          document.querySelector<HTMLAnchorElement>(SELECTORS.personLinkInRow)?.href ?? null;
+        if (firstNow && firstNow !== firstHrefBefore) return true;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return true;
+    }
+    const firstNow =
+      document.querySelector<HTMLAnchorElement>(SELECTORS.personLinkInRow)?.href ?? null;
+    if (firstNow && firstNow !== firstHrefBefore) return true;
+  }
+  return false;
+}
+
+export function hasNextPageButton(): boolean {
+  return findNextPageButton() !== null;
+}
+
 export function getScrollDebug(): {
   found: boolean;
   rowCount: number;

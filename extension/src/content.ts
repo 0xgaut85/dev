@@ -3,6 +3,8 @@ import {
   scrapePersonProfile,
   scrollForMore,
   getScrollDebug,
+  clickNextPage,
+  hasNextPageButton,
 } from "./scrape";
 import { SELECTORS, isPersonProfilePage } from "./selectors";
 import type { ScrapedLead } from "./types";
@@ -13,6 +15,8 @@ type Msg =
   | { type: "SCRAPE_PROFILE" }
   | { type: "SCROLL_FOR_MORE" }
   | { type: "SCROLL_DEBUG" }
+  | { type: "GO_NEXT_PAGE" }
+  | { type: "HAS_NEXT_PAGE" }
   | { type: "WAIT_FOR_READY"; mode: "list" | "profile"; timeoutMs?: number };
 
 function sleep(ms: number) {
@@ -73,6 +77,19 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
   }
   if (msg.type === "SCROLL_DEBUG") {
     sendResponse({ ok: true, debug: getScrollDebug() });
+    return true;
+  }
+  if (msg.type === "GO_NEXT_PAGE") {
+    (async () => {
+      const before = document.querySelectorAll(SELECTORS.personLinkInRow).length;
+      const advanced = await clickNextPage(15000);
+      const after = document.querySelectorAll(SELECTORS.personLinkInRow).length;
+      sendResponse({ ok: true, advanced, before, after, url: location.href });
+    })();
+    return true;
+  }
+  if (msg.type === "HAS_NEXT_PAGE") {
+    sendResponse({ ok: true, has: hasNextPageButton() });
     return true;
   }
   if (msg.type === "WAIT_FOR_READY") {

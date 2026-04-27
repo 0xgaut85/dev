@@ -296,36 +296,54 @@ async function runAutoSearch(): Promise<void> {
 
       if (batchNum >= cfg.maxPages) break;
 
-      // Re-focus the seed tab so scroll events fire on a foregrounded tab.
+      // Re-focus the seed tab so scroll/click events fire on a foregrounded tab.
       try {
         await chrome.tabs.update(tab.id, { active: true });
       } catch {
         /* ignore */
       }
 
-      const scrollRes = await sendToTab<{
+      // Primary strategy: click the "Next page" arrow next to "1-50 of N results".
+      // Fallback: infinite-scroll the inner grid container.
+      const nextRes = await sendToTab<{
         ok: boolean;
-        grew: boolean;
+        advanced: boolean;
         before: number;
         after: number;
-      }>(tab.id, { type: "SCROLL_FOR_MORE" });
+        url: string;
+      }>(tab.id, { type: "GO_NEXT_PAGE" });
 
-      if (!scrollRes?.ok) {
-        await setRunState({ lastError: "Scroll request failed." });
-        break;
-      }
-      if (!scrollRes.grew) {
-        consecutiveEmptyScrolls++;
-        if (consecutiveEmptyScrolls >= 3) {
+      if (nextRes?.ok && nextRes.advanced) {
+        consecutiveEmptyScrolls = 0;
+        // After click, wait for the new page to be ready before scraping again.
+        const ready = await waitForReady(tab.id, "list", 15000);
+        if (!ready.ok) {
           await setRunState({
-            lastError: `End of results reached (no new rows after 3 scroll attempts, total ${seenUrls.size}).`,
+            lastError: `Page ${batchNum + 1} not ready (${ready.reason}).`,
           });
           break;
         }
-        // Wait longer between retries so Crunchbase can fetch the next page.
-        await sleep(jitter(cfg.pageDelayMs * 2, 2000));
       } else {
-        consecutiveEmptyScrolls = 0;
+        // No Next button or click didn't change the page — try scroll fallback.
+        const scrollRes = await sendToTab<{
+          ok: boolean;
+          grew: boolean;
+          before: number;
+          after: number;
+        }>(tab.id, { type: "SCROLL_FOR_MORE" });
+
+        if (!scrollRes?.ok || !scrollRes.grew) {
+          consecutiveEmptyScrolls++;
+          if (consecutiveEmptyScrolls >= 2) {
+            await setRunState({
+              lastError: `End of results reached (no Next button, no new rows after scroll). Total: ${seenUrls.size}.`,
+            });
+            break;
+          }
+          await sleep(jitter(cfg.pageDelayMs * 2, 2000));
+        } else {
+          consecutiveEmptyScrolls = 0;
+        }
       }
 
       await sleep(jitter(cfg.pageDelayMs, 2000));
