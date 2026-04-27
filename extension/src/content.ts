@@ -1,8 +1,8 @@
 import {
   scrapeSearchResults,
   scrapePersonProfile,
-  clickNextPage,
-  waitForResultsRefresh,
+  scrollForMore,
+  getScrollDebug,
 } from "./scrape";
 import { SELECTORS, isPersonProfilePage } from "./selectors";
 import type { ScrapedLead } from "./types";
@@ -11,7 +11,8 @@ type Msg =
   | { type: "PING" }
   | { type: "SCRAPE_PAGE" }
   | { type: "SCRAPE_PROFILE" }
-  | { type: "GO_NEXT_PAGE" }
+  | { type: "SCROLL_FOR_MORE" }
+  | { type: "SCROLL_DEBUG" }
   | { type: "WAIT_FOR_READY"; mode: "list" | "profile"; timeoutMs?: number };
 
 function sleep(ms: number) {
@@ -62,18 +63,17 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
     sendResponse({ ok: true, lead });
     return true;
   }
-  if (msg.type === "GO_NEXT_PAGE") {
+  if (msg.type === "SCROLL_FOR_MORE") {
     (async () => {
-      const clicked = clickNextPage();
-      if (!clicked) {
-        sendResponse({ ok: true, clicked: false });
-        return;
-      }
-      // Wait for the results to actually change before responding so the
-      // background runner doesn't race ahead and scrape the same page twice.
-      const refreshed = await waitForResultsRefresh(15000);
-      sendResponse({ ok: true, clicked: true, refreshed });
+      const before = document.querySelectorAll(SELECTORS.personLinkInRow).length;
+      const grew = await scrollForMore(12000);
+      const after = document.querySelectorAll(SELECTORS.personLinkInRow).length;
+      sendResponse({ ok: true, grew, before, after });
     })();
+    return true;
+  }
+  if (msg.type === "SCROLL_DEBUG") {
+    sendResponse({ ok: true, debug: getScrollDebug() });
     return true;
   }
   if (msg.type === "WAIT_FOR_READY") {

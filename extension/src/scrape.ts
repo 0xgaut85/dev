@@ -180,92 +180,76 @@ export function scrapePersonProfile(): ScrapedLead | null {
   };
 }
 
-type ClickableEl = HTMLButtonElement | HTMLAnchorElement;
-
-function isVisible(el: Element): boolean {
-  const rect = (el as HTMLElement).getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) return false;
-  const style = window.getComputedStyle(el as HTMLElement);
-  return style.visibility !== "hidden" && style.display !== "none";
+/**
+ * Crunchbase Discover uses infinite scroll on an inner container, not pagination.
+ * The container is `<div class="grid-id-people">` (or similar, in case classes
+ * change). We find the nearest scrollable ancestor of the first person row.
+ */
+function findScrollContainer(): HTMLElement | null {
+  const firstRow = document.querySelector<HTMLAnchorElement>(SELECTORS.personLinkInRow);
+  if (!firstRow) return null;
+  let el: HTMLElement | null = firstRow.parentElement as HTMLElement | null;
+  for (let i = 0; i < 25 && el; i++) {
+    const cs = window.getComputedStyle(el);
+    const overflowY = cs.overflowY;
+    const scrollable =
+      (overflowY === "auto" || overflowY === "scroll") &&
+      el.scrollHeight > el.clientHeight + 5;
+    if (scrollable) return el;
+    el = el.parentElement;
+  }
+  return null;
 }
 
-function isDisabled(el: Element): boolean {
-  const html = el as HTMLElement;
-  if ((html as HTMLButtonElement).disabled) return true;
-  if (html.getAttribute("aria-disabled") === "true") return true;
-  if (html.classList.contains("disabled")) return true;
-  if (html.classList.contains("mat-button-disabled")) return true;
-  if (html.hasAttribute("disabled")) return true;
-  return false;
+function rowCount(): number {
+  return document.querySelectorAll(SELECTORS.personLinkInRow).length;
 }
 
-export function findNextPageButton(): ClickableEl | null {
-  // 1) Direct selector match.
-  const direct = Array.from(
-    document.querySelectorAll<ClickableEl>(SELECTORS.nextPageButton)
-  ).filter((el) => isVisible(el) && !isDisabled(el));
-  if (direct.length > 0) return direct[0];
+/**
+ * Scroll the results container down to trigger lazy-load of more rows.
+ * Returns true if new rows appeared, false if we hit the end.
+ */
+export async function scrollForMore(timeoutMs = 12000): Promise<boolean> {
+  const container = findScrollContainer();
+  if (!container) return false;
 
-  // 2) Heuristic: scan all buttons/links, look for ones whose accessible name
-  //    or icon implies "next". Crunchbase often uses a chevron-right icon
-  //    inside an unlabeled button.
-  const candidates = Array.from(
-    document.querySelectorAll<ClickableEl>("button, a[role='button']")
-  );
-  const matches = candidates.filter((el) => {
-    if (!isVisible(el) || isDisabled(el)) return false;
-    const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-    const text = (el.textContent ?? "").trim().toLowerCase();
-    if (/^(next|next page|»|>)$/.test(text)) return true;
-    if (/next/.test(aria)) return true;
-    // Icon-only button with chevron_right
-    const icon = el.querySelector("mat-icon, svg[class*='chevron']");
-    if (icon) {
-      const iconText = (icon.textContent ?? "").trim().toLowerCase();
-      if (iconText === "chevron_right" || iconText === "keyboard_arrow_right") {
-        // require it to live in a paginator container
-        const container = el.closest(
-          "mat-paginator, [class*='paginator'], [class*='pagination']"
-        );
-        if (container) return true;
-      }
-    }
-    return false;
-  });
-  return matches[0] ?? null;
-}
-
-export function clickNextPage(): boolean {
-  const btn = findNextPageButton();
-  if (!btn) return false;
-  btn.scrollIntoView({ block: "center", inline: "center" });
-  btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  btn.click();
-  return true;
-}
-
-export async function waitForResultsRefresh(timeoutMs = 15000): Promise<boolean> {
-  // Capture fingerprint of current rows; wait until it changes.
-  const before = Array.from(
-    document.querySelectorAll<HTMLAnchorElement>(SELECTORS.personLinkInRow)
-  )
-    .slice(0, 5)
-    .map((a) => a.getAttribute("href"))
-    .join("|");
+  const before = rowCount();
+  // Multiple scroll nudges in case the virtualization needs a few ticks.
+  for (let i = 0; i < 3; i++) {
+    container.scrollTop = container.scrollHeight;
+    container.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
+  }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 400));
-    const now = Array.from(
-      document.querySelectorAll<HTMLAnchorElement>(SELECTORS.personLinkInRow)
-    )
-      .slice(0, 5)
-      .map((a) => a.getAttribute("href"))
-      .join("|");
-    if (now && now !== before) return true;
+    if (rowCount() > before) return true;
+    // Keep nudging — Crunchbase loads in batches as the bottom sentinel enters view.
+    container.scrollTop = container.scrollHeight;
+    container.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 500));
   }
   return false;
+}
+
+export function getScrollDebug(): {
+  found: boolean;
+  rowCount: number;
+  scrollHeight?: number;
+  clientHeight?: number;
+  scrollTop?: number;
+  className?: string;
+} {
+  const container = findScrollContainer();
+  if (!container) return { found: false, rowCount: rowCount() };
+  return {
+    found: true,
+    rowCount: rowCount(),
+    scrollHeight: container.scrollHeight,
+    clientHeight: container.clientHeight,
+    scrollTop: container.scrollTop,
+    className: container.className?.toString(),
+  };
 }
 
 /**

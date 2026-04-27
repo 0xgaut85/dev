@@ -68,7 +68,7 @@ async function saveSettings() {
     profileDepth: profileDepthEl.checked,
     pageDelayMs: Math.max(2000, parseInt(pageDelayEl.value || "4500", 10)),
     profileDelayMs: Math.max(1500, parseInt(profileDelayEl.value || "3500", 10)),
-    maxPages: Math.min(50, Math.max(1, parseInt(maxPagesEl.value || "20", 10))),
+    maxPages: Math.min(200, Math.max(1, parseInt(maxPagesEl.value || "20", 10))),
     batchSize: Math.min(100, Math.max(1, parseInt(batchSizeEl.value || "25", 10))),
   };
   await chrome.runtime.sendMessage({ type: "SET_SETTINGS", settings: next });

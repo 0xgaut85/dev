@@ -247,9 +247,15 @@ async function runAutoSearch(): Promise<void> {
       return;
     }
 
-    for (let page = 1; page <= cfg.maxPages; page++) {
+    // Crunchbase Discover uses infinite scroll inside `.grid-id-people`.
+    // Each iteration: scrape what's currently in the DOM, process only the
+    // *new* rows (dedupe by crunchbaseUrl), then scroll for more.
+    const seenUrls = new Set<string>();
+    let consecutiveEmptyScrolls = 0;
+
+    for (let batchNum = 1; batchNum <= cfg.maxPages; batchNum++) {
       if (stopRequested) break;
-      await setRunState({ page });
+      await setRunState({ page: batchNum });
 
       const list = await sendToTab<{ ok: boolean; leads: ScrapedLead[] }>(tab.id, {
         type: "SCRAPE_PAGE",
@@ -258,14 +264,21 @@ async function runAutoSearch(): Promise<void> {
         await setRunState({ lastError: "Failed to scrape current page." });
         break;
       }
-      const cur = await getRunState();
-      await setRunState({ leadsScraped: cur.leadsScraped + list.leads.length });
 
-      let batch: ScrapedLead[] = list.leads;
-      if (cfg.profileDepth) {
-        batch = await enrichWithProfileVisits(list.leads, cfg);
+      const newLeads = list.leads.filter((l) => {
+        if (!l.crunchbaseUrl) return false;
+        if (seenUrls.has(l.crunchbaseUrl)) return false;
+        seenUrls.add(l.crunchbaseUrl);
+        return true;
+      });
+
+      const cur = await getRunState();
+      await setRunState({ leadsScraped: cur.leadsScraped + newLeads.length });
+
+      let batch: ScrapedLead[] = newLeads;
+      if (cfg.profileDepth && newLeads.length > 0) {
+        batch = await enrichWithProfileVisits(newLeads, cfg);
         if (stopRequested) {
-          // still ingest what we already enriched
           if (batch.length) {
             const sent = await postLeadsBatched(batch, cfg.batchSize);
             const s = await getRunState();
@@ -281,41 +294,39 @@ async function runAutoSearch(): Promise<void> {
         await setRunState({ leadsSent: s.leadsSent + sent });
       }
 
-      if (page >= cfg.maxPages) break;
+      if (batchNum >= cfg.maxPages) break;
 
-      // Re-focus the seed tab to click "next page" reliably.
+      // Re-focus the seed tab so scroll events fire on a foregrounded tab.
       try {
         await chrome.tabs.update(tab.id, { active: true });
       } catch {
         /* ignore */
       }
 
-      const next = await sendToTab<{
+      const scrollRes = await sendToTab<{
         ok: boolean;
-        clicked: boolean;
-        refreshed?: boolean;
-      }>(tab.id, { type: "GO_NEXT_PAGE" });
-      if (!next?.clicked) {
-        await setRunState({
-          lastError:
-            "Could not find a Next-page control. End of results, or markup changed.",
-        });
+        grew: boolean;
+        before: number;
+        after: number;
+      }>(tab.id, { type: "SCROLL_FOR_MORE" });
+
+      if (!scrollRes?.ok) {
+        await setRunState({ lastError: "Scroll request failed." });
         break;
       }
-      if (!next.refreshed) {
-        await setRunState({
-          lastError: "Clicked Next but results didn't change. Stopping.",
-        });
-        break;
+      if (!scrollRes.grew) {
+        consecutiveEmptyScrolls++;
+        if (consecutiveEmptyScrolls >= 2) {
+          await setRunState({
+            lastError: `End of results reached (no new rows after scrolling, total ${seenUrls.size}).`,
+          });
+          break;
+        }
+      } else {
+        consecutiveEmptyScrolls = 0;
       }
+
       await sleep(jitter(cfg.pageDelayMs, 2000));
-      const ready2 = await waitForReady(tab.id, "list", 20000);
-      if (!ready2.ok) {
-        await setRunState({
-          lastError: `Next page not ready (${ready2.reason}). Stopping.`,
-        });
-        break;
-      }
     }
   } catch (err) {
     await setRunState({
