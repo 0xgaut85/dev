@@ -372,12 +372,22 @@ async function goNextPageWithVision(tabId: number, cfg: Settings): Promise<boole
     return false;
   }
 
-  // 2. Capture the visible viewport (PNG, base64 data URL).
+  // 2. Capture the visible viewport (PNG, base64 data URL). captureVisibleTab
+  // needs an explicit windowId here: passing undefined triggers an activeTab
+  // permission check that fails for tabs we opened programmatically.
   let dataUrl: string;
   try {
-    dataUrl = await chrome.tabs.captureVisibleTab(undefined as unknown as number, {
-      format: "png",
-    });
+    const tabInfo = await chrome.tabs.get(tabId);
+    if (typeof tabInfo.windowId !== "number") {
+      throw new Error("tab has no windowId");
+    }
+    // Make sure the tab is the active one in its window — captureVisibleTab
+    // captures whatever is currently visible.
+    if (!tabInfo.active) {
+      await chrome.tabs.update(tabId, { active: true });
+      await sleep(300);
+    }
+    dataUrl = await chrome.tabs.captureVisibleTab(tabInfo.windowId, { format: "png" });
   } catch (err) {
     await setRunState({
       lastError: `Screenshot failed: ${err instanceof Error ? err.message : "?"}`,
@@ -574,13 +584,22 @@ async function runAutoSearch(): Promise<void> {
         break;
       }
       let advanced = domResult === "advanced";
+      let domFailReason: string | null = null;
 
       // 2) Fall back to Grok vision if DOM couldn't find or the click missed.
       if (!advanced) {
+        domFailReason = domResult;
         await setRunState({
-          lastError: `DOM pager click failed (${domResult}); trying vision fallback…`,
+          lastError: `DOM pager: ${domResult}; trying vision fallback…`,
         });
         advanced = await goNextPageWithVision(tab.id, cfg);
+      }
+
+      // Stash a diagnostic suffix so the user knows which path was taken.
+      if (advanced && domFailReason) {
+        await setRunState({
+          lastError: `Vision fallback succeeded (DOM result: ${domFailReason}).`,
+        });
       }
 
       if (!advanced) {
