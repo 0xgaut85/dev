@@ -90,6 +90,31 @@ async function sendToTab<T>(tabId: number, msg: unknown, retries = 3): Promise<T
   return null;
 }
 
+/**
+ * Retry wrapper for chrome.tabs.* operations that occasionally throw
+ * "Tabs cannot be edited right now (user may be dragging a tab)" — a
+ * transient race condition in Chrome's tab subsystem. We wait a short
+ * spell and try again before giving up.
+ */
+async function retryTabOp<T>(label: string, fn: () => Promise<T>, maxAttempts = 5): Promise<T> {
+  let lastErr: unknown = null;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      // Only retry on the specific transient errors. Other failures bubble up.
+      const transient = /cannot be edited|user may be dragging|No tab with id/i.test(msg);
+      if (!transient || i === maxAttempts - 1) break;
+      await sleep(500 + i * 500);
+    }
+  }
+  throw lastErr instanceof Error
+    ? new Error(`${label}: ${lastErr.message}`)
+    : new Error(`${label}: failed after ${maxAttempts} attempts`);
+}
+
 async function ensureContentScript(tabId: number): Promise<boolean> {
   // Try a PING first; if it fails, inject content.js programmatically.
   try {
@@ -145,8 +170,7 @@ async function navigateAndWait(
   mode: "list" | "profile",
   timeoutMs = 20000
 ): Promise<{ ok: boolean; reason?: string }> {
-  await chrome.tabs.update(tabId, { url });
-  // Brief delay for navigation to commit before content script messaging.
+  await retryTabOp("nav", () => chrome.tabs.update(tabId, { url }));
   await sleep(1500);
   return waitForReady(tabId, mode, timeoutMs);
 }
@@ -158,10 +182,16 @@ type VisitResult =
   | { ok: false; reason: "cloudflare" | "rate-limit" | "timeout" | "other" };
 
 async function visitProfile(url: string, profileDelayMs: number): Promise<VisitResult> {
-  const tab = await chrome.tabs.create({ url, active: false });
-  if (!tab.id) return { ok: false, reason: "other" };
+  let tab: chrome.tabs.Tab;
   try {
-    const ready = await waitForReady(tab.id, "profile", 15000);
+    tab = await retryTabOp("create tab", () => chrome.tabs.create({ url, active: false }));
+  } catch {
+    return { ok: false, reason: "other" };
+  }
+  if (!tab.id) return { ok: false, reason: "other" };
+  const tabId = tab.id;
+  try {
+    const ready = await waitForReady(tabId, "profile", 15000);
     if (!ready.ok) {
       const reason =
         ready.reason === "cloudflare"
@@ -173,15 +203,15 @@ async function visitProfile(url: string, profileDelayMs: number): Promise<VisitR
               : "other";
       return { ok: false, reason };
     }
-    const r = await sendToTab<{ ok: boolean; lead: ScrapedLead | null }>(tab.id, {
+    const r = await sendToTab<{ ok: boolean; lead: ScrapedLead | null }>(tabId, {
       type: "SCRAPE_PROFILE",
     });
     return { ok: true, lead: r?.lead ?? null };
   } finally {
     try {
-      await chrome.tabs.remove(tab.id);
+      await retryTabOp("remove tab", () => chrome.tabs.remove(tabId));
     } catch {
-      /* tab already gone */
+      /* tab already gone or unrecoverable */
     }
     await sleep(jitter(profileDelayMs, 1500));
   }
@@ -191,22 +221,23 @@ async function visitProfile(url: string, profileDelayMs: number): Promise<VisitR
  * Iterate through list-page leads and open each profile. On Cloudflare /
  * rate-limit, back off (longer cooldowns each time) and retry, but keep
  * going on the same lead. Only abort the run if we hit `MAX_CF_HITS`
- * consecutive cloudflare blocks — at that point we're almost certainly
- * being throttled and continuing makes things worse.
+ * consecutive cloudflare blocks.
+ *
+ * Calls `onLead` for each processed lead (success or fallback), so the
+ * caller can stream results to the API instead of waiting for the whole
+ * batch to finish.
  */
 async function enrichWithProfileVisits(
   listLeads: ScrapedLead[],
   cfg: Settings,
-): Promise<ScrapedLead[]> {
+  onLead: (lead: ScrapedLead) => Promise<void> | void,
+): Promise<void> {
   const MAX_CF_HITS = 5;
-  const out: ScrapedLead[] = [];
   let consecutiveCfHits = 0;
 
   for (const lead of listLeads) {
     if (stopRequested) break;
 
-    // Per-lead retry: on cloudflare, sleep with exponential backoff and try
-    // again up to 2 times before skipping the lead.
     let attempts = 0;
     let result: VisitResult | null = null;
     while (attempts < 3 && !stopRequested) {
@@ -244,9 +275,15 @@ async function enrichWithProfileVisits(
       break;
     }
 
-    out.push(result?.ok ? mergeListAndProfile(lead, result.lead) : lead);
+    const merged = result?.ok ? mergeListAndProfile(lead, result.lead) : lead;
+    try {
+      await onLead(merged);
+    } catch (err) {
+      await setRunState({
+        lastError: `onLead callback failed: ${err instanceof Error ? err.message : "?"}`,
+      });
+    }
   }
-  return out;
 }
 
 // ---------- pagination strategies ----------
@@ -289,7 +326,7 @@ async function goNextPageViaUrl(
   );
 
   try {
-    await chrome.tabs.update(tabId, { url: targetUrl });
+    await retryTabOp("nav", () => chrome.tabs.update(tabId, { url: targetUrl }));
   } catch (err) {
     await setRunState({
       lastError: `Tab navigate failed: ${err instanceof Error ? err.message : "?"}`,
@@ -409,7 +446,9 @@ async function runAutoSearch(): Promise<void> {
 
   let tab: chrome.tabs.Tab;
   try {
-    tab = await chrome.tabs.create({ url: cfg.seedUrl, active: true });
+    tab = await retryTabOp("create seed tab", () =>
+      chrome.tabs.create({ url: cfg.seedUrl, active: true }),
+    );
   } catch (err) {
     await setRunState({
       running: false,
@@ -467,30 +506,36 @@ async function runAutoSearch(): Promise<void> {
       const cur = await getRunState();
       await setRunState({ leadsScraped: cur.leadsScraped + newLeads.length });
 
-      let batch: ScrapedLead[] = newLeads;
       if (cfg.profileDepth && newLeads.length > 0) {
-        batch = await enrichWithProfileVisits(newLeads, cfg);
-        if (stopRequested) {
-          if (batch.length) {
-            const sent = await postLeadsBatched(batch, cfg.batchSize);
-            const s = await getRunState();
-            await setRunState({ leadsSent: s.leadsSent + sent });
-          }
-          break;
-        }
-      }
-
-      if (batch.length) {
-        const sent = await postLeadsBatched(batch, cfg.batchSize);
+        // Stream-ingest: each profile is POSTed as it's scraped, so a mid-loop
+        // crash only loses the in-flight lead, not the whole batch.
+        const buffer: ScrapedLead[] = [];
+        const flush = async () => {
+          if (!buffer.length) return;
+          const slice = buffer.splice(0, buffer.length);
+          const sent = await postLeadsBatched(slice, cfg.batchSize);
+          const s = await getRunState();
+          await setRunState({ leadsSent: s.leadsSent + sent });
+        };
+        await enrichWithProfileVisits(newLeads, cfg, async (lead) => {
+          buffer.push(lead);
+          if (buffer.length >= cfg.batchSize) await flush();
+        });
+        await flush();
+        if (stopRequested) break;
+      } else if (newLeads.length) {
+        // No profile-depth: ingest the list-only leads directly.
+        const sent = await postLeadsBatched(newLeads, cfg.batchSize);
         const s = await getRunState();
         await setRunState({ leadsSent: s.leadsSent + sent });
       }
 
       if (batchNum >= cfg.maxPages) break;
 
-      // Re-focus the seed tab so click coordinates resolve on a foregrounded tab.
+      // Re-focus the seed tab. Best-effort with retry — non-fatal if it fails.
       try {
-        await chrome.tabs.update(tab.id, { active: true });
+        const tabIdForFocus = tab.id;
+        await retryTabOp("refocus", () => chrome.tabs.update(tabIdForFocus, { active: true }));
         await sleep(400);
       } catch {
         /* ignore */
