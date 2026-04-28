@@ -301,6 +301,61 @@ async function findNextButtonViaApi(
   }
 }
 
+/**
+ * Try to advance to the next page using DOM heuristics first (fast & reliable
+ * when Crunchbase's pager structure is stable). Returns:
+ *   "advanced" — clicked + page actually turned
+ *   "disabled" — found a Next button but it's disabled (last page)
+ *   "not-found" — no plausible button found via DOM (caller should try vision)
+ *   "click-failed" — clicked but page didn't turn (caller may try vision)
+ */
+async function goNextPageWithDom(
+  tabId: number,
+): Promise<"advanced" | "disabled" | "not-found" | "click-failed"> {
+  // Snapshot anchors before click.
+  const vp = await sendToTab<{
+    ok: boolean;
+    firstHref: string | null;
+    url: string;
+    counter: string | null;
+  }>(tabId, { type: "GET_VIEWPORT" });
+  if (!vp?.ok) return "not-found";
+
+  const click = await sendToTab<{
+    ok: boolean;
+    found: boolean;
+    disabled: boolean;
+    reason?: string;
+    targetTag?: string;
+    ariaLabel?: string | null;
+  }>(tabId, { type: "CLICK_NEXT_DOM" });
+
+  if (!click) return "not-found";
+  if (click.found && click.disabled) return "disabled";
+  if (!click.ok) return "not-found";
+
+  // Wait for page to actually turn.
+  const turn = await sendToTab<{
+    ok: boolean;
+    advanced: boolean;
+    via?: string;
+    counter?: string | null;
+  }>(tabId, {
+    type: "WAIT_FOR_PAGE_TURN",
+    firstHrefBefore: vp.firstHref,
+    urlBefore: vp.url,
+    counterBefore: vp.counter,
+    timeoutMs: 15000,
+  });
+  if (turn?.advanced) {
+    await setRunState({
+      lastError: `DOM next click ok via ${turn.via} (target=${click.targetTag} aria="${click.ariaLabel ?? ""}")`,
+    });
+    return "advanced";
+  }
+  return "click-failed";
+}
+
 async function goNextPageWithVision(tabId: number, cfg: Settings): Promise<boolean> {
   // 1. Get viewport metadata + stable anchors for "did we advance?" detection.
   const vp = await sendToTab<{
@@ -510,10 +565,25 @@ async function runAutoSearch(): Promise<void> {
         /* ignore */
       }
 
-      const advanced = await goNextPageWithVision(tab.id, cfg);
+      // 1) Try DOM-based Next first (fast, reliable when markup is stable).
+      const domResult = await goNextPageWithDom(tab.id);
+      if (domResult === "disabled") {
+        await setRunState({
+          lastError: `Reached last page (${seenUrls.size} leads scraped). Next button is disabled.`,
+        });
+        break;
+      }
+      let advanced = domResult === "advanced";
+
+      // 2) Fall back to Grok vision if DOM couldn't find or the click missed.
       if (!advanced) {
-        // goNextPageWithVision has already set a specific lastError describing
-        // why pagination failed. Don't overwrite it with a generic message.
+        await setRunState({
+          lastError: `DOM pager click failed (${domResult}); trying vision fallback…`,
+        });
+        advanced = await goNextPageWithVision(tab.id, cfg);
+      }
+
+      if (!advanced) {
         const cur = await getRunState();
         if (!cur.lastError) {
           await setRunState({

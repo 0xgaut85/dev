@@ -8,6 +8,8 @@ type Msg =
   | { type: "SCRAPE_PAGE" }
   | { type: "SCRAPE_PROFILE" }
   | { type: "GET_VIEWPORT" }
+  | { type: "FIND_NEXT_DOM" }
+  | { type: "CLICK_NEXT_DOM" }
   | { type: "CLICK_AT"; cssX: number; cssY: number }
   | {
       type: "WAIT_FOR_PAGE_TURN";
@@ -83,22 +85,112 @@ async function exhaustGrid(
 }
 
 /**
- * Reads the "1-50 of 1,163 results" counter near the top of Discover. Useful
- * as a "did the page advance?" signal that's more reliable than the first-row
- * href on lists where React replaces row contents in place.
+ * Walks the DOM to find the "1-50 of 1,163 results" counter element itself
+ * (not just the text). Returns the element so we can use it as an anchor for
+ * locating the adjacent Next button.
  */
-function readPagerCounter(): string | null {
+function findCounterElement(): HTMLElement | null {
   const re = /\d[\d,]*\s*[-–]\s*\d[\d,]*\s+of\s+\d[\d,]*/i;
-  const candidates = document.querySelectorAll<HTMLElement>(
-    "results-info, .results-info, [class*='results'], header, .page-controls, span, div",
-  );
-  for (let i = 0; i < candidates.length && i < 800; i++) {
-    const t = candidates[i].textContent?.trim() ?? "";
-    if (t.length > 200) continue;
-    const m = t.match(re);
-    if (m) return m[0].replace(/\s+/g, " ");
+  // Prefer leaf elements: only check ones with no element children, so we
+  // don't pick up huge wrappers that happen to contain the text.
+  const all = document.querySelectorAll<HTMLElement>("span, div, p, b, strong, em, small");
+  for (let i = 0; i < all.length && i < 5000; i++) {
+    const el = all[i];
+    if (el.children.length > 2) continue;
+    const t = el.textContent?.trim() ?? "";
+    if (t.length > 80 || t.length < 10) continue;
+    if (re.test(t)) return el;
   }
   return null;
+}
+
+function readPagerCounter(): string | null {
+  const re = /\d[\d,]*\s*[-–]\s*\d[\d,]*\s+of\s+\d[\d,]*/i;
+  const el = findCounterElement();
+  const t = el?.textContent?.trim() ?? "";
+  const m = t.match(re);
+  return m ? m[0].replace(/\s+/g, " ") : null;
+}
+
+/**
+ * Locate the "Next page" button via DOM heuristics. We anchor on the pager
+ * counter ("1-50 of 1,163") and search within its nearest interactive parent
+ * for a button whose aria-label / icon / text suggests Next. Returns null if
+ * we can't find a plausible button or it's disabled.
+ */
+function findNextButtonDom(): {
+  found: boolean;
+  disabled?: boolean;
+  reason?: string;
+  rect?: { x: number; y: number; width: number; height: number };
+  el?: HTMLElement;
+} {
+  const counter = findCounterElement();
+  if (!counter) return { found: false, reason: "counter not found in DOM" };
+
+  // Climb up to a parent likely to contain the pager controls.
+  let scope: HTMLElement | null = counter;
+  for (let i = 0; i < 8 && scope; i++) {
+    if (scope.querySelectorAll("button").length >= 1) break;
+    scope = scope.parentElement;
+  }
+  if (!scope) return { found: false, reason: "no scope parent with buttons" };
+
+  // Climb a few more levels to grab the prev+next buttons together.
+  let widerScope: HTMLElement | null = scope;
+  for (let i = 0; i < 4 && widerScope; i++) {
+    if (widerScope.querySelectorAll("button").length >= 2) break;
+    widerScope = widerScope.parentElement;
+  }
+  const searchRoot = widerScope ?? scope;
+
+  const buttons = Array.from(
+    searchRoot.querySelectorAll<HTMLElement>(
+      "button, a[role='button'], [role='button']",
+    ),
+  );
+
+  // Score each button by how "next-like" it is.
+  const scored = buttons.map((b) => {
+    const aria = (b.getAttribute("aria-label") ?? "").toLowerCase();
+    const title = (b.getAttribute("title") ?? "").toLowerCase();
+    const text = (b.textContent ?? "").trim().toLowerCase();
+    const html = b.innerHTML.toLowerCase();
+    let score = 0;
+    if (/\bnext\b/.test(aria)) score += 10;
+    if (/\bnext\b/.test(title)) score += 8;
+    if (/\bnext page\b/.test(aria) || /\bnext page\b/.test(title)) score += 5;
+    if (text === ">" || text === "›" || text === "→") score += 6;
+    if (/chevron[_-]?right|arrow[_-]?right/.test(html)) score += 5;
+    // Prev/back buttons should score negative.
+    if (/\b(prev|previous|back)\b/.test(aria + " " + title + " " + text)) score -= 20;
+    if (/chevron[_-]?left|arrow[_-]?left/.test(html)) score -= 10;
+    return { el: b, score, aria, title, text };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  if (!best || best.score <= 0) {
+    return { found: false, reason: "no plausible next button near counter" };
+  }
+
+  const disabled =
+    best.el.hasAttribute("disabled") ||
+    best.el.getAttribute("aria-disabled") === "true" ||
+    best.el.classList.contains("mat-mdc-button-disabled") ||
+    best.el.classList.contains("mat-button-disabled");
+
+  if (disabled) {
+    return { found: true, disabled: true, reason: "next button is disabled — last page" };
+  }
+
+  const rect = best.el.getBoundingClientRect();
+  return {
+    found: true,
+    disabled: false,
+    rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+    el: best.el,
+  };
 }
 
 function detectChallenge(): string | null {
@@ -149,6 +241,55 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
   }
   if (msg.type === "SCRAPE_PROFILE") {
     scrapePersonProfile().then((lead) => sendResponse({ ok: true, lead }));
+    return true;
+  }
+  if (msg.type === "FIND_NEXT_DOM") {
+    const r = findNextButtonDom();
+    sendResponse({
+      ok: true,
+      found: r.found,
+      disabled: r.disabled ?? false,
+      reason: r.reason ?? null,
+      rect: r.rect ?? null,
+    });
+    return true;
+  }
+  if (msg.type === "CLICK_NEXT_DOM") {
+    (async () => {
+      const r = findNextButtonDom();
+      if (!r.found || r.disabled || !r.el) {
+        sendResponse({
+          ok: false,
+          found: r.found,
+          disabled: r.disabled ?? false,
+          reason: r.reason ?? "not found",
+        });
+        return;
+      }
+      const target = r.el;
+      target.scrollIntoView({ block: "center", behavior: "instant" as ScrollBehavior });
+      await sleep(120);
+      const rect = target.getBoundingClientRect();
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      } as const;
+      target.dispatchEvent(new PointerEvent("pointerdown", opts));
+      target.dispatchEvent(new MouseEvent("mousedown", opts));
+      target.dispatchEvent(new PointerEvent("pointerup", opts));
+      target.dispatchEvent(new MouseEvent("mouseup", opts));
+      target.dispatchEvent(new MouseEvent("click", opts));
+      (target as HTMLButtonElement).click?.();
+      sendResponse({
+        ok: true,
+        targetTag: target.tagName,
+        targetClass: target.className?.toString() ?? "",
+        ariaLabel: target.getAttribute("aria-label"),
+      });
+    })();
     return true;
   }
   if (msg.type === "GET_VIEWPORT") {
