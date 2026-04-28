@@ -347,6 +347,78 @@ export default function LeadsTable({
         </button>
         <button
           onClick={async () => {
+            setBusy("enrich-all");
+            try {
+              const idsRes = await fetch("/api/unenriched-ids");
+              const idsData = await idsRes.json();
+              if (!idsRes.ok) {
+                alert(`Failed to fetch un-enriched IDs: ${idsData.error ?? idsRes.status}`);
+                return;
+              }
+              const allIds: string[] = idsData.leadIds ?? [];
+              if (allIds.length === 0) {
+                alert("Nothing to enrich — every lead already has an ethnicity tag.");
+                return;
+              }
+              if (!confirm(`Enrich ${allIds.length} un-enriched leads? This may take a few minutes.`)) {
+                return;
+              }
+
+              const BATCH = 50;
+              let totalOk = 0;
+              const errSummary: Record<string, number> = {};
+              for (let i = 0; i < allIds.length; i += BATCH) {
+                const batch = allIds.slice(i, i + BATCH);
+                const res = await fetch("/api/enrich-ui", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ leadIds: batch }),
+                });
+                const data = (await res.json().catch(() => ({}))) as {
+                  ok?: boolean;
+                  error?: string;
+                  results?: Array<{ leadId: string; ok: boolean; error?: string }>;
+                };
+                if (!res.ok) {
+                  alert(
+                    `Batch ${i / BATCH + 1} failed (HTTP ${res.status}): ${data.error ?? "?"}.\nGot ${totalOk}/${allIds.length} done before stopping.`,
+                  );
+                  router.refresh();
+                  return;
+                }
+                for (const r of data.results ?? []) {
+                  if (r.ok) totalOk++;
+                  else {
+                    const k = r.error ?? "unknown";
+                    errSummary[k] = (errSummary[k] ?? 0) + 1;
+                  }
+                }
+                // Live progress indication via reload — not necessary every batch
+                // but feels nicer for long runs.
+                if ((i / BATCH) % 4 === 3) router.refresh();
+              }
+
+              const errLines = Object.entries(errSummary)
+                .map(([k, v]) => `  ${v}× ${k}`)
+                .join("\n");
+              alert(
+                `Enriched ${totalOk}/${allIds.length} leads.${
+                  errLines ? `\n\nFailures:\n${errLines}` : ""
+                }`,
+              );
+              router.refresh();
+            } finally {
+              setBusy(null);
+            }
+          }}
+          disabled={busy !== null}
+          className="btn-primary"
+          title="Run AI enrichment on every lead missing ethnicity data"
+        >
+          {busy === "enrich-all" ? "Enriching all…" : "Enrich un-enriched"}
+        </button>
+        <button
+          onClick={async () => {
             setBusy("normalizing");
             try {
               const res = await fetch("/api/normalize-ethnicity", { method: "POST" });
