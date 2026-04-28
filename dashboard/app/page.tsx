@@ -65,22 +65,28 @@ export default async function Home({
     return true;
   });
 
-  // Stats over the un-filtered set, so the banner shows what's actually in the DB
-  // regardless of which ethnicity is currently selected in the dropdown.
+  // Stats over the WHOLE DB (not just `leads`, which is filtered + capped at 1000).
+  // We do this with a single grouped query so it scales to any size.
+  const [totalCount, allEnrichments] = await Promise.all([
+    prisma.lead.count(),
+    prisma.enrichment.findMany({ select: { ethnicity: true, leadId: true } }),
+  ]);
+
   const ethnicityStats: Record<string, number> = {};
-  let unenriched = 0;
-  for (const l of leads) {
-    const v = l.enrichment?.ethnicity;
-    if (!v) {
-      unenriched++;
+  let nullEthCount = 0;
+  for (const e of allEnrichments) {
+    if (!e.ethnicity) {
+      nullEthCount++;
     } else {
-      const k = v.trim().toUpperCase() || "—";
+      const k = e.ethnicity.trim().toUpperCase();
       ethnicityStats[k] = (ethnicityStats[k] ?? 0) + 1;
     }
   }
-
-  const totalCount = await prisma.lead.count();
-  const enrichedCount = await prisma.enrichment.count();
+  // Un-enriched = (no enrichment row) + (enrichment row with null ethnicity).
+  // This matches what /api/unenriched-ids returns, so the bulk button's count
+  // agrees with the banner.
+  const enrichedCount = allEnrichments.length - nullEthCount;
+  const unenriched = totalCount - enrichedCount;
 
   return (
     <main className="max-w-[1400px] mx-auto p-6">
@@ -123,7 +129,7 @@ export default async function Home({
         }))}
         searchParams={sp}
         ethnicityStats={ethnicityStats}
-        totalLeads={leads.length}
+        totalLeads={totalCount}
         unenriched={unenriched}
       />
     </main>
