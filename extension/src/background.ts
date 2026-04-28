@@ -427,6 +427,22 @@ async function runAutoSearch(): Promise<void> {
     await setRunState({ lastError: "Seed URL not set." });
     return;
   }
+  // Defensive validation — Chrome will treat malformed URLs as file:// paths
+  // ("ERR_FILE_NOT_FOUND") so refuse upfront with a clear message.
+  try {
+    const u = new URL(cfg.seedUrl);
+    if (!/^https?:$/.test(u.protocol)) {
+      throw new Error(`bad protocol ${u.protocol}`);
+    }
+    if (!/(^|\.)crunchbase\.com$/i.test(u.hostname)) {
+      throw new Error(`hostname must be crunchbase.com (got ${u.hostname})`);
+    }
+  } catch (err) {
+    await setRunState({
+      lastError: `Invalid seed URL: ${err instanceof Error ? err.message : "?"}. Must be a full https://www.crunchbase.com/... URL.`,
+    });
+    return;
+  }
   if (!cfg.apiUrl || !cfg.apiToken) {
     await setRunState({ lastError: "API URL or token not set." });
     return;

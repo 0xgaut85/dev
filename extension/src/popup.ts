@@ -60,11 +60,35 @@ async function loadRunState() {
   renderProgress(state);
 }
 
-async function saveSettings() {
+function validateSeedUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return "Seed URL is empty.";
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return `Seed URL is not a valid URL ("${trimmed.slice(0, 60)}"). Must start with https://`;
+  }
+  if (!/^https?:$/.test(url.protocol)) {
+    return `Seed URL must use http(s), got ${url.protocol}`;
+  }
+  if (!/(^|\.)crunchbase\.com$/i.test(url.hostname)) {
+    return `Seed URL must point to crunchbase.com, got ${url.hostname}`;
+  }
+  return null;
+}
+
+async function saveSettings(): Promise<boolean> {
+  const seedRaw = seedUrlEl.value.trim();
+  const seedErr = seedRaw ? validateSeedUrl(seedRaw) : null;
+  if (seedErr) {
+    log(`Seed URL invalid: ${seedErr}`);
+    return false;
+  }
   const next: Partial<Settings> = {
     apiUrl: apiUrlEl.value.trim(),
     apiToken: apiTokenEl.value.trim(),
-    seedUrl: seedUrlEl.value.trim(),
+    seedUrl: seedRaw,
     profileDepth: profileDepthEl.checked,
     pageDelayMs: Math.max(2000, parseInt(pageDelayEl.value || "4500", 10)),
     profileDelayMs: Math.max(1500, parseInt(profileDelayEl.value || "3500", 10)),
@@ -73,10 +97,18 @@ async function saveSettings() {
   };
   await chrome.runtime.sendMessage({ type: "SET_SETTINGS", settings: next });
   log("Settings saved.");
+  return true;
 }
 
 async function startAutoSearch() {
-  await saveSettings();
+  const seedErr = validateSeedUrl(seedUrlEl.value);
+  if (seedErr) {
+    log(`Cannot start: ${seedErr}`);
+    alert(`Cannot start auto-search:\n\n${seedErr}\n\nThe seed URL must be a full Crunchbase Discover URL, e.g.\nhttps://www.crunchbase.com/discover/people/4b78...`);
+    return;
+  }
+  const saved = await saveSettings();
+  if (!saved) return;
   const r = (await chrome.runtime.sendMessage({ type: "START_AUTO_SEARCH" })) as {
     ok: boolean;
     error?: string;
