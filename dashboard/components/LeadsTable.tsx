@@ -372,6 +372,52 @@ export default function LeadsTable({
           {busy === "normalizing" ? "Fixing…" : "Fix ethnicity buckets"}
         </button>
         <button
+          onClick={async () => {
+            // Two-step: dry-run first to show counts, then confirm.
+            setBusy("purging");
+            try {
+              const dry = await fetch("/api/delete-non-white", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ dryRun: true, includeUnenriched: false }),
+              });
+              const dryData = await dry.json();
+              if (!dry.ok) {
+                alert(`Dry-run failed: ${dryData.error ?? dry.status}`);
+                return;
+              }
+              const breakdown = Object.entries(dryData.breakdown ?? {})
+                .map(([k, v]) => `  ${k}: ${v}`)
+                .join("\n") || "  (none)";
+              const ok = confirm(
+                `This will permanently delete ${dryData.wouldDelete} non-WHITE leads.\n\nBreakdown:\n${breakdown}\n\nUnenriched leads will NOT be deleted.\n\nProceed?`,
+              );
+              if (!ok) return;
+
+              const res = await fetch("/api/delete-non-white", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ dryRun: false, includeUnenriched: false }),
+              });
+              const data = await res.json();
+              if (!res.ok) {
+                alert(`Delete failed: ${data.error ?? res.status}`);
+              } else {
+                alert(`Deleted ${data.deleted} leads.`);
+                setSelected(new Set());
+                router.refresh();
+              }
+            } finally {
+              setBusy(null);
+            }
+          }}
+          disabled={busy !== null}
+          className="btn-danger"
+          title="Permanently remove every lead whose AI-detected ethnicity is not WHITE"
+        >
+          {busy === "purging" ? "Purging…" : "Delete all non-WHITE"}
+        </button>
+        <button
           onClick={deleteSelected}
           disabled={selected.size === 0 || busy !== null}
           className="btn-danger"
