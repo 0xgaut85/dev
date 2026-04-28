@@ -10,6 +10,8 @@ type Msg =
   | { type: "GET_VIEWPORT" }
   | { type: "FIND_NEXT_DOM" }
   | { type: "CLICK_NEXT_DOM" }
+  | { type: "FIND_NEXT_URL" }
+  | { type: "PRESS_KEY"; key: string; ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean }
   | { type: "CLICK_AT"; cssX: number; cssY: number }
   | {
       type: "WAIT_FOR_PAGE_TURN";
@@ -110,6 +112,80 @@ function readPagerCounter(): string | null {
   const t = el?.textContent?.trim() ?? "";
   const m = t.match(re);
   return m ? m[0].replace(/\s+/g, " ") : null;
+}
+
+/**
+ * Compute the URL for the next Discover page. Crunchbase's pageId param is
+ * shaped like "<pageNum>_a_<cursor-uuid>". We try, in order:
+ *   1. Find any <a href> in the DOM whose pageId number is exactly currentPage+1.
+ *   2. Increment the leading number in the existing pageId (cursor stays valid).
+ *   3. As a last resort, append "?pageId=2_a_..." style guess (rarely needed).
+ */
+function computeNextPageUrl(): {
+  ok: boolean;
+  url?: string;
+  current?: { url: string; page: number; pageIdRaw: string | null };
+  reason?: string;
+  source?: "dom-link" | "increment" | "no-pageid";
+} {
+  const here = location.href;
+  let url: URL;
+  try {
+    url = new URL(here);
+  } catch {
+    return { ok: false, reason: "current URL un-parseable" };
+  }
+  const pageIdRaw = url.searchParams.get("pageId");
+  // Pull the page number off the existing pageId, if any.
+  const match = pageIdRaw?.match(/^(\d+)_/);
+  const currentPage = match ? parseInt(match[1], 10) : 1;
+
+  // 1) Check the DOM for any link to the next page directly. Crunchbase
+  // sometimes renders the pager as <a href> elements, which is the most
+  // reliable source.
+  const wantPage = currentPage + 1;
+  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href*='pageId=']"));
+  for (const a of links) {
+    try {
+      const u = new URL(a.href, location.origin);
+      const pid = u.searchParams.get("pageId");
+      const m = pid?.match(/^(\d+)_/);
+      if (m && parseInt(m[1], 10) === wantPage) {
+        return {
+          ok: true,
+          url: u.toString(),
+          current: { url: here, page: currentPage, pageIdRaw },
+          source: "dom-link",
+        };
+      }
+    } catch {
+      /* skip bad hrefs */
+    }
+  }
+
+  // 2) Increment-in-place: take the current pageId, bump the leading number.
+  if (pageIdRaw) {
+    const next = pageIdRaw.replace(/^(\d+)_/, () => `${wantPage}_`);
+    if (next !== pageIdRaw) {
+      url.searchParams.set("pageId", next);
+      return {
+        ok: true,
+        url: url.toString(),
+        current: { url: here, page: currentPage, pageIdRaw },
+        source: "increment",
+      };
+    }
+  }
+
+  // 3) No existing pageId at all (we're on page 1 of a Discover view that
+  // doesn't show pageId in the initial URL). We can't manufacture a cursor
+  // UUID, so we have to fall back to a different strategy.
+  return {
+    ok: false,
+    current: { url: here, page: currentPage, pageIdRaw },
+    reason: "no pageId in URL and no next-page link in DOM",
+    source: "no-pageid",
+  };
 }
 
 /**
@@ -241,6 +317,28 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
   }
   if (msg.type === "SCRAPE_PROFILE") {
     scrapePersonProfile().then((lead) => sendResponse({ ok: true, lead }));
+    return true;
+  }
+  if (msg.type === "FIND_NEXT_URL") {
+    sendResponse({ ok: true, ...computeNextPageUrl() });
+    return true;
+  }
+  if (msg.type === "PRESS_KEY") {
+    const target = (document.activeElement as HTMLElement) ?? document.body;
+    const opts: KeyboardEventInit = {
+      key: msg.key,
+      code: msg.key.length === 1 ? `Key${msg.key.toUpperCase()}` : msg.key,
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: !!msg.ctrl,
+      shiftKey: !!msg.shift,
+      altKey: !!msg.alt,
+      metaKey: !!msg.meta,
+    };
+    target.dispatchEvent(new KeyboardEvent("keydown", opts));
+    target.dispatchEvent(new KeyboardEvent("keypress", opts));
+    target.dispatchEvent(new KeyboardEvent("keyup", opts));
+    sendResponse({ ok: true, target: target.tagName });
     return true;
   }
   if (msg.type === "FIND_NEXT_DOM") {

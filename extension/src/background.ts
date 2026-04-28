@@ -249,56 +249,82 @@ async function enrichWithProfileVisits(
   return out;
 }
 
-// ---------- vision-driven pagination ----------
+// ---------- pagination strategies ----------
 
-type FindNextResp = {
-  ok: boolean;
-  found: boolean;
-  cssX?: number;
-  cssY?: number;
-  confidence?: number | null;
-  reason?: string | null;
-  error?: string;
-};
+/**
+ * Strategy A: navigate to the next page via URL manipulation. We read the
+ * tab's current URL, ask the content script to compute the next-page URL by
+ * either finding an in-DOM link or incrementing the pageId number, then
+ * navigate there. This bypasses all click/screenshot machinery — it's the
+ * most reliable approach for Crunchbase Discover.
+ */
+async function goNextPageViaUrl(
+  tabId: number,
+): Promise<"advanced" | "no-pageid" | "nav-failed" | "not-ready"> {
+  const find = await sendToTab<{
+    ok: boolean;
+    url?: string;
+    current?: { url: string; page: number; pageIdRaw: string | null };
+    reason?: string;
+    source?: string;
+  }>(tabId, { type: "FIND_NEXT_URL" });
 
-async function findNextButtonViaApi(
-  imageDataUrl: string,
-  viewportWidth: number,
-  viewportHeight: number,
-  devicePixelRatio: number,
-  cfg: Settings
-): Promise<FindNextResp | null> {
-  const url = cfg.apiUrl.replace(/\/$/, "") + "/api/find-next-button";
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.apiToken}`,
-      },
-      body: JSON.stringify({
-        imageDataUrl,
-        viewportWidth,
-        viewportHeight,
-        devicePixelRatio,
-      }),
+  if (!find?.ok || !find.url) {
+    await setRunState({
+      lastError: `URL pager: ${find?.reason ?? "no URL returned"} (current page=${find?.current?.page ?? "?"}, pageId=${find?.current?.pageIdRaw ?? "none"})`,
     });
-    const body = (await res.json().catch(() => ({}))) as FindNextResp;
-    if (!res.ok) {
-      await setRunState({
-        lastError: `find-next-button HTTP ${res.status}: ${body.error ?? res.statusText}`,
-      });
-      return null;
-    }
-    return body;
+    return find?.reason?.includes("no pageId") ? "no-pageid" : "nav-failed";
+  }
+
+  const targetUrl = find.url;
+  await setRunState({
+    lastError: `Navigating to next page (source=${find.source}, page=${(find.current?.page ?? 0) + 1})`,
+  });
+
+  // Snapshot the first row's href before navigation so we can confirm the
+  // page actually turned (sometimes navigation no-ops if the cursor expired).
+  const before = await sendToTab<{ ok: boolean; firstHref: string | null; url: string }>(
+    tabId,
+    { type: "GET_VIEWPORT" },
+  );
+
+  try {
+    await chrome.tabs.update(tabId, { url: targetUrl });
   } catch (err) {
     await setRunState({
-      lastError: `find-next-button request failed: ${
-        err instanceof Error ? err.message : "?"
-      }`,
+      lastError: `Tab navigate failed: ${err instanceof Error ? err.message : "?"}`,
     });
-    return null;
+    return "nav-failed";
   }
+
+  // Wait for the new page to load.
+  await sleep(1500);
+  const ready = await waitForReady(tabId, "list", 15000);
+  if (!ready.ok) {
+    await setRunState({
+      lastError: `Next page didn't load (${ready.reason}).`,
+    });
+    return "not-ready";
+  }
+
+  // Confirm the row contents actually changed (cursor hadn't expired).
+  const after = await sendToTab<{ ok: boolean; firstHref: string | null; url: string }>(
+    tabId,
+    { type: "GET_VIEWPORT" },
+  );
+  if (
+    after?.firstHref &&
+    before?.firstHref &&
+    after.firstHref === before.firstHref &&
+    after.url === before.url
+  ) {
+    await setRunState({
+      lastError: `Navigation succeeded but content didn't change — cursor may have expired.`,
+    });
+    return "nav-failed";
+  }
+
+  return "advanced";
 }
 
 /**
@@ -354,111 +380,6 @@ async function goNextPageWithDom(
     return "advanced";
   }
   return "click-failed";
-}
-
-async function goNextPageWithVision(tabId: number, cfg: Settings): Promise<boolean> {
-  // 1. Get viewport metadata + stable anchors for "did we advance?" detection.
-  const vp = await sendToTab<{
-    ok: boolean;
-    width: number;
-    height: number;
-    devicePixelRatio: number;
-    firstHref: string | null;
-    url: string;
-    counter: string | null;
-  }>(tabId, { type: "GET_VIEWPORT" });
-  if (!vp?.ok) {
-    await setRunState({ lastError: "Could not read viewport from page." });
-    return false;
-  }
-
-  // 2. Capture the visible viewport (PNG, base64 data URL). captureVisibleTab
-  // needs an explicit windowId here: passing undefined triggers an activeTab
-  // permission check that fails for tabs we opened programmatically.
-  let dataUrl: string;
-  try {
-    const tabInfo = await chrome.tabs.get(tabId);
-    if (typeof tabInfo.windowId !== "number") {
-      throw new Error("tab has no windowId");
-    }
-    // Make sure the tab is the active one in its window — captureVisibleTab
-    // captures whatever is currently visible.
-    if (!tabInfo.active) {
-      await chrome.tabs.update(tabId, { active: true });
-      await sleep(300);
-    }
-    dataUrl = await chrome.tabs.captureVisibleTab(tabInfo.windowId, { format: "png" });
-  } catch (err) {
-    await setRunState({
-      lastError: `Screenshot failed: ${err instanceof Error ? err.message : "?"}`,
-    });
-    return false;
-  }
-
-  // 3. Ask Grok where the Next arrow is.
-  const find = await findNextButtonViaApi(
-    dataUrl,
-    vp.width,
-    vp.height,
-    vp.devicePixelRatio,
-    cfg
-  );
-  if (!find) return false;
-  if (!find.found) {
-    await setRunState({ lastError: `Grok: ${find.reason ?? "no Next arrow visible"}` });
-    return false;
-  }
-  if (find.cssX == null || find.cssY == null) {
-    await setRunState({ lastError: "Grok response missing coordinates." });
-    return false;
-  }
-
-  // 4. Click at the returned CSS coordinates.
-  const click = await sendToTab<{
-    ok: boolean;
-    targetTag?: string;
-    targetClass?: string;
-    error?: string;
-  }>(tabId, {
-    type: "CLICK_AT",
-    cssX: find.cssX,
-    cssY: find.cssY,
-  });
-  if (!click?.ok) {
-    await setRunState({
-      lastError: `Click failed: ${click?.error ?? "no element at coords"}`,
-    });
-    return false;
-  }
-
-  // 5. Wait for ANY of: first-row href change, URL change, or pager counter change.
-  const turn = await sendToTab<{
-    ok: boolean;
-    advanced: boolean;
-    via?: string;
-    firstHref?: string | null;
-    url?: string;
-    counter?: string | null;
-  }>(tabId, {
-    type: "WAIT_FOR_PAGE_TURN",
-    firstHrefBefore: vp.firstHref,
-    urlBefore: vp.url,
-    counterBefore: vp.counter,
-    timeoutMs: 18000,
-  });
-  if (!turn?.advanced) {
-    // Surface specific diagnostics instead of letting the runner say "End of results".
-    const targetInfo = click.targetTag
-      ? `${click.targetTag.toLowerCase()}${click.targetClass ? "." + String(click.targetClass).split(/\s+/).slice(0, 2).join(".") : ""}`
-      : "?";
-    await setRunState({
-      lastError: `Click landed on <${targetInfo}> at (${Math.round(find.cssX)}, ${Math.round(
-        find.cssY,
-      )}) but page did not advance in 18s. counter before='${vp.counter ?? "?"}' / after='${turn?.counter ?? "?"}'. Likely Grok pointed at the wrong element, or this is the last page.`,
-    });
-    return false;
-  }
-  return true;
 }
 
 // ---------- main runner ----------
@@ -575,31 +496,30 @@ async function runAutoSearch(): Promise<void> {
         /* ignore */
       }
 
-      // 1) Try DOM-based Next first (fast, reliable when markup is stable).
-      const domResult = await goNextPageWithDom(tab.id);
-      if (domResult === "disabled") {
-        await setRunState({
-          lastError: `Reached last page (${seenUrls.size} leads scraped). Next button is disabled.`,
-        });
-        break;
-      }
-      let advanced = domResult === "advanced";
-      let domFailReason: string | null = null;
+      // 1) URL-based: read current URL, increment pageId, navigate. This
+      // bypasses screenshots / clicks entirely and is the most reliable.
+      const urlResult = await goNextPageViaUrl(tab.id);
+      let advanced = urlResult === "advanced";
 
-      // 2) Fall back to Grok vision if DOM couldn't find or the click missed.
+      // 2) Fall back to clicking the Next button via DOM heuristics if the
+      // URL strategy can't find a pageId (e.g. some Discover variants).
       if (!advanced) {
-        domFailReason = domResult;
         await setRunState({
-          lastError: `DOM pager: ${domResult}; trying vision fallback…`,
+          lastError: `URL strategy failed (${urlResult}); trying DOM click…`,
         });
-        advanced = await goNextPageWithVision(tab.id, cfg);
-      }
-
-      // Stash a diagnostic suffix so the user knows which path was taken.
-      if (advanced && domFailReason) {
-        await setRunState({
-          lastError: `Vision fallback succeeded (DOM result: ${domFailReason}).`,
-        });
+        const domResult = await goNextPageWithDom(tab.id);
+        if (domResult === "disabled") {
+          await setRunState({
+            lastError: `Reached last page (${seenUrls.size} leads scraped). Next button is disabled.`,
+          });
+          break;
+        }
+        advanced = domResult === "advanced";
+        if (!advanced) {
+          await setRunState({
+            lastError: `Both URL & DOM pagination failed (URL: ${urlResult}, DOM: ${domResult}). Stopping after ${seenUrls.size} leads.`,
+          });
+        }
       }
 
       if (!advanced) {
