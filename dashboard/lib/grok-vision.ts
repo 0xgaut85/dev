@@ -42,6 +42,112 @@ Examples (for calibration only):
 
 Confidence: 0.9+ when both signals strongly agree, 0.6-0.8 when one is ambiguous, 0.3-0.5 when conflicting. Always pick a category — never null. Age must be a single integer (your best estimate).`;
 
+/**
+ * Fetch an image URL on the dashboard server and return it as a base64
+ * data-URL with a Grok-supported MIME (image/jpeg, image/png, image/webp).
+ * This bypasses xAI's own fetcher, which sometimes encounters AVIF responses,
+ * SVG placeholders, or content-types it refuses.
+ *
+ * Returns the original URL unchanged if we can't pre-fetch (so Grok still
+ * gets a chance with its own fetcher).
+ */
+async function imageToDataUrl(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        // Mimic a real browser so CDNs serve the same content they would in
+        // Chrome instead of AVIF / SVG placeholders / WebP variants Grok rejects.
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        // Crucially exclude AVIF so the CDN falls back to JPEG/PNG.
+        Accept: "image/jpeg,image/png,image/webp,image/*;q=0.8,*/*;q=0.5",
+        Referer: "https://www.crunchbase.com/",
+      },
+    });
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+
+    const ctype = (res.headers.get("content-type") ?? "").toLowerCase().split(";")[0].trim();
+    const buf = Buffer.from(await res.arrayBuffer());
+
+    // Sniff magic bytes — we trust these over the header.
+    const sniffed = sniffImageMime(buf);
+    let mime: string | null = null;
+    if (sniffed === "image/jpeg" || sniffed === "image/png" || sniffed === "image/webp") {
+      mime = sniffed;
+    } else if (
+      ctype === "image/jpeg" ||
+      ctype === "image/jpg" ||
+      ctype === "image/png" ||
+      ctype === "image/webp"
+    ) {
+      mime = ctype === "image/jpg" ? "image/jpeg" : ctype;
+    } else {
+      throw new Error(`unsupported image format (ctype=${ctype}, sniff=${sniffed})`);
+    }
+
+    return `data:${mime};base64,${buf.toString("base64")}`;
+  } catch (err) {
+    // Fall back to the raw URL — Grok may still succeed with its own fetcher.
+    console.log(
+      `[grok-vision] imageToDataUrl failed for ${url.slice(0, 80)}: ${
+        err instanceof Error ? err.message : "?"
+      } — falling back to raw URL`,
+    );
+    return url;
+  }
+}
+
+function sniffImageMime(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  // JPEG: FF D8 FF
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  // WebP: "RIFF" .... "WEBP"
+  if (
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  // GIF
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return "image/gif";
+  // AVIF: contains "ftypavif" at offset 4
+  if (
+    buf[4] === 0x66 &&
+    buf[5] === 0x74 &&
+    buf[6] === 0x79 &&
+    buf[7] === 0x70 &&
+    buf[8] === 0x61 &&
+    buf[9] === 0x76 &&
+    buf[10] === 0x69 &&
+    buf[11] === 0x66
+  ) {
+    return "image/avif";
+  }
+  // SVG (text-based; check for "<svg" or "<?xml" in first 100 bytes)
+  const head = buf.slice(0, 100).toString("utf8").toLowerCase();
+  if (head.includes("<svg") || head.includes("<?xml")) return "image/svg+xml";
+  return null;
+}
+
 function userMessage(name: string | null | undefined): string {
   const safeName = (name ?? "").trim();
   if (!safeName) {
@@ -57,6 +163,11 @@ export async function detectFromUrlGrok(input: EnrichmentInput): Promise<Enrichm
   const { imageUrl, name } = input;
   const model = process.env.XAI_VISION_MODEL ?? "grok-4-1-fast-reasoning";
   const baseUrl = process.env.XAI_API_BASE ?? "https://api.x.ai/v1";
+
+  // Pre-fetch the image and pass it as a data: URL so xAI doesn't have to
+  // hit the original CDN themselves. Crunchbase / Cloudinary serves AVIF or
+  // SVG placeholders to some fetchers, which Grok rejects outright.
+  const dataUrl = await imageToDataUrl(imageUrl);
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -75,7 +186,7 @@ export async function detectFromUrlGrok(input: EnrichmentInput): Promise<Enrichm
           role: "user",
           content: [
             { type: "text", text: userMessage(name) },
-            { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+            { type: "image_url", image_url: { url: dataUrl, detail: "high" } },
           ],
         },
       ],

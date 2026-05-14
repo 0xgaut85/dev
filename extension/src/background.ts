@@ -71,7 +71,16 @@ async function postLeadsBatched(leads: ScrapedLead[], batchSize: number): Promis
     if (r.ok) {
       sent += slice.length;
     } else {
-      await setRunState({ lastError: `Ingest failed: ${r.error ?? `HTTP ${r.status}`}` });
+      const bodySnippet = r.body ? JSON.stringify(r.body).slice(0, 200) : "";
+      const hint =
+        r.status === 401
+          ? " — bearer token mismatch: check that the popup's API token matches INGEST_TOKEN on Railway."
+          : "";
+      await setRunState({
+        lastError: `Ingest failed: ${r.error ?? `HTTP ${r.status}`}${hint}${
+          bodySnippet ? ` body=${bodySnippet}` : ""
+        }`,
+      });
     }
   }
   return sent;
